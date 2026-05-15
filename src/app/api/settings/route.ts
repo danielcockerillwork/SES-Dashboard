@@ -133,7 +133,8 @@ export async function POST(request: Request) {
 
     const organization = await resolveOrganizationForSettings(settings);
     return formRequest ? redirectToSettings(request, "saved") : NextResponse.json(publicSettings(settings, organization));
-  } catch {
+  } catch (error) {
+    console.error("Settings save failed", error);
     return formRequest ? redirectToSettings(request, "error") : NextResponse.json(
       { error: "Settings could not be saved. Check the database and encryption configuration." },
       { status: 500 },

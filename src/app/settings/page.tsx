@@ -111,8 +111,13 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    const message = noticeFromSettingsStatus(new URLSearchParams(window.location.search).get("settings"));
+    const params = new URLSearchParams(window.location.search);
+    const message = noticeFromSettingsStatus(params.get("settings"));
     if (!message) return;
+
+    params.delete("settings");
+    const nextUrl = params.toString() ? `${window.location.pathname}?${params.toString()}` : window.location.pathname;
+    window.history.replaceState(null, "", nextUrl);
 
     const frame = window.requestAnimationFrame(() => setNotice(message));
     return () => window.cancelAnimationFrame(frame);
