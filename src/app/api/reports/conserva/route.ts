@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { defaultDateRange } from "@/lib/utils";
 import { requireCurrentUserId, unauthorizedResponse } from "@/lib/auth";
-import { getConservaReport } from "@/lib/serviceminder/reporting";
+import { getConservaReport, ServiceMinderApiKeyRequiredError } from "@/lib/serviceminder/reporting";
 import type { ConservaReportFilters } from "@/lib/serviceminder/types";
 
 export const runtime = "nodejs";
@@ -64,8 +64,20 @@ export async function GET(request: Request) {
   const userId = await requireCurrentUserId();
   if (!userId) return unauthorizedResponse();
 
-  const result = await getConservaReport(userId, filtersFromRequest(request), {
-    refreshCache: refreshCacheFromRequest(request),
-  });
-  return NextResponse.json(publicReport(result));
+  try {
+    const result = await getConservaReport(userId, filtersFromRequest(request), {
+      refreshCache: refreshCacheFromRequest(request),
+    });
+    return NextResponse.json(publicReport(result));
+  } catch (error) {
+    if (error instanceof ServiceMinderApiKeyRequiredError) {
+      return NextResponse.json(
+        { error: error.message, code: "serviceminder_api_key_required" },
+        { status: 428 },
+      );
+    }
+
+    const message = error instanceof Error ? error.message : "Report data could not be loaded.";
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
 }

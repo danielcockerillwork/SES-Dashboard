@@ -4,6 +4,7 @@ import { getDecryptedApiKey, getSettings } from "@/lib/settings";
 import { ServiceMinderClient } from "@/lib/serviceminder/client";
 import {
   getConservaReport,
+  isMockReportFallbackEnabled,
   lookupOptions,
   lookupOptionsFromServiceMinderResponses,
 } from "@/lib/serviceminder/reporting";
@@ -11,6 +12,13 @@ import { resolveCurrentServiceMinderOrganization } from "@/lib/serviceminder/ide
 import { relativeDateRange } from "@/lib/utils";
 
 export const runtime = "nodejs";
+
+const emptyLookupOptions = {
+  serviceAgents: [],
+  services: [],
+  organizations: [],
+  currentOrganization: null,
+};
 
 function lookupTimeoutMs() {
   const parsed = Number(process.env.SERVICEMINDER_LOOKUP_TIMEOUT_MS);
@@ -48,7 +56,10 @@ export async function GET() {
   if (!userId) return unauthorizedResponse();
 
   const [settings, apiKey] = await Promise.all([getSettings(userId), getDecryptedApiKey(userId)]).catch(() => [null, null] as const);
-  if (!settings || !apiKey) return NextResponse.json(await mockLookupOptions(userId));
+  if (!settings || !apiKey) {
+    if (!isMockReportFallbackEnabled()) return NextResponse.json(emptyLookupOptions);
+    return NextResponse.json(await mockLookupOptions(userId));
+  }
 
   const client = new ServiceMinderClient({
     baseUrl: settings.apiBaseUrl,

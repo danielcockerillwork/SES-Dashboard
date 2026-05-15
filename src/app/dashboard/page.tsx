@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  ServerCog,
   SlidersHorizontal,
   Star,
   Target,
@@ -386,6 +387,12 @@ function isReportResponse(value: unknown): value is ReportResponse {
     Array.isArray(record.fieldSummaries) &&
     Array.isArray(record.scoreTrends)
   );
+}
+
+function responseErrorMessage(data: unknown, fallback: string) {
+  if (!data || typeof data !== "object") return fallback;
+  const error = (data as { error?: unknown }).error;
+  return typeof error === "string" && error.trim() ? error : fallback;
 }
 
 function mergeAppointmentPreviewDetail(row: PublicRow, detail: PublicRow): PublicRow {
@@ -1044,6 +1051,8 @@ export default function DashboardPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [lookupOptions, setLookupOptions] = useState<LookupOptions>(emptyLookupOptions);
+  const [settings, setSettings] = useState<PublicSettings | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [excludedServiceNames, setExcludedServiceNames] = useState<string[]>([]);
   const [viewName, setViewName] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
@@ -1062,6 +1071,7 @@ export default function DashboardPage() {
     [excludedServiceNames, paramsKey],
   );
   const hasPendingFilterChanges = !filtersEqual(draftFilters, appliedFilters);
+  const needsServiceMinderConnection = settingsLoaded && settings !== null && !settings.apiKeyConfigured;
   const visibleReport = useMemo(
     () => applyExcludedServicesToReport(report, excludedServiceNames),
     [excludedServiceNames, report],
@@ -1123,6 +1133,16 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!hydratedDashboardState) return;
+    if (!settingsLoaded) return;
+    if (needsServiceMinderConnection) {
+      const frame = window.requestAnimationFrame(() => {
+        setReport(emptyReport);
+        setLoadedReportParams(activeReportCacheKey);
+        setNotice(null);
+        setLoading(false);
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
     if (loadedReportParams === activeReportCacheKey) return;
 
     let active = true;
@@ -1133,7 +1153,9 @@ export default function DashboardPage() {
         const requestParams = new URLSearchParams(params);
         const response = await fetch(`/api/reports/conserva?${requestParams.toString()}`);
         const data = (await response.json()) as unknown;
-        if (!response.ok || !isReportResponse(data)) throw new Error("Report data could not be loaded.");
+        if (!response.ok || !isReportResponse(data)) {
+          throw new Error(responseErrorMessage(data, "Report data could not be loaded."));
+        }
         if (active) {
           setReport(data);
           setLoadedReportParams(activeReportCacheKey);
@@ -1153,7 +1175,14 @@ export default function DashboardPage() {
     return () => {
       active = false;
     };
-  }, [activeReportCacheKey, hydratedDashboardState, loadedReportParams, params]);
+  }, [
+    activeReportCacheKey,
+    hydratedDashboardState,
+    loadedReportParams,
+    needsServiceMinderConnection,
+    params,
+    settingsLoaded,
+  ]);
 
   useEffect(() => {
     fetch("/api/saved-views")
@@ -1174,6 +1203,7 @@ export default function DashboardPage() {
       .then((response) => (response.ok ? response.json() : null))
       .then((data: unknown) => {
         if (!isPublicSettings(data)) return;
+        setSettings(data);
         setExcludedServiceNames(data.excludedServiceNames);
         setDraftFilters((current) => ({
           ...current,
@@ -1184,7 +1214,11 @@ export default function DashboardPage() {
           serviceTypes: withoutExcludedServices(current.serviceTypes, data.excludedServiceNames),
         }));
       })
-      .catch(() => setExcludedServiceNames([]));
+      .catch(() => {
+        setSettings(null);
+        setExcludedServiceNames([]);
+      })
+      .finally(() => setSettingsLoaded(true));
   }, []);
 
   const serviceAgentOptions = Array.from(
@@ -1248,13 +1282,20 @@ export default function DashboardPage() {
   }
 
   async function refreshReport() {
+    if (needsServiceMinderConnection) {
+      setNotice("Connect your ServiceMinder API key in Settings before loading live dashboard data.");
+      return;
+    }
+
     setLoading(true);
     try {
       const requestParams = new URLSearchParams(params);
       requestParams.set("refreshCache", "true");
       const response = await fetch(`/api/reports/conserva?${requestParams.toString()}`);
       const data = (await response.json()) as unknown;
-      if (!response.ok || !isReportResponse(data)) throw new Error("Report data could not be refreshed.");
+      if (!response.ok || !isReportResponse(data)) {
+        throw new Error(responseErrorMessage(data, "Report data could not be refreshed."));
+      }
       setReport(data);
       setLoadedReportParams(activeReportCacheKey);
       setNotice(null);
@@ -1399,6 +1440,30 @@ export default function DashboardPage() {
             Change exclusions
           </a>
         </p>
+      ) : null}
+
+      {needsServiceMinderConnection ? (
+        <Card className="mt-6 border-primary/20 bg-accent/20">
+          <CardHeader>
+            <CardTitle>Connect your ServiceMinder account</CardTitle>
+            <CardDescription>
+              This dashboard does not use a shared organization key. Save your own ServiceMinder API key in Settings
+              to load reports for the organization tied to your account.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-wrap items-center gap-3">
+            <a
+              href="/settings"
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+            >
+              <ServerCog className="h-4 w-4" />
+              Open Settings
+            </a>
+            <span className="text-sm text-muted-foreground">
+              API keys are encrypted server-side and scoped to your signed-in dashboard user.
+            </span>
+          </CardContent>
+        </Card>
       ) : null}
 
       <Card className="mt-6 lg:sticky lg:top-14 lg:z-30">

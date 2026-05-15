@@ -192,6 +192,17 @@ type ReportWithSummarizableRows<Row extends SummarizableAppointmentRow> = {
   rawPayloads: unknown[];
 };
 
+export class ServiceMinderApiKeyRequiredError extends Error {
+  constructor() {
+    super("Connect your ServiceMinder API key in Settings before loading live dashboard data.");
+    this.name = "ServiceMinderApiKeyRequiredError";
+  }
+}
+
+export function isMockReportFallbackEnabled() {
+  return process.env.NODE_ENV !== "production";
+}
+
 function actualFinishDate(raw: RawRecord) {
   const explicit = dateField(raw, [
     "CompletedDate",
@@ -1304,6 +1315,10 @@ export async function getConservaReport(
     const [settings, apiKey] = await Promise.all([getSettings(userId), getDecryptedApiKey(userId)]);
     const effectiveFilters = filtersWithExcludedServices(filters, settings);
     if (!apiKey) {
+      if (!isMockReportFallbackEnabled()) {
+        throw new ServiceMinderApiKeyRequiredError();
+      }
+
       const mockRecords = firstArray(mockAppointmentPayload, ["Appointments"]).filter(isRecord);
       return buildConservaReport(
         mockRecords,
@@ -1368,6 +1383,10 @@ export async function getConservaReport(
     await recordReportRun(userId, result, effectiveFilters);
     return result;
   } catch (error) {
+    if (!isMockReportFallbackEnabled() || error instanceof ServiceMinderApiKeyRequiredError) {
+      throw error;
+    }
+
     const mockRecords = firstArray(mockAppointmentPayload, ["Appointments"]).filter(isRecord);
     const message = error instanceof Error ? error.message : "Unknown ServiceMinder error.";
     return buildConservaReport(
@@ -1383,6 +1402,10 @@ export async function getConservaReport(
 export async function getConservaAppointmentDetail(userId: string, targetAppointmentId: string) {
   const [settings, apiKey] = await Promise.all([getSettings(userId), getDecryptedApiKey(userId)]);
   if (!apiKey) {
+    if (!isMockReportFallbackEnabled()) {
+      throw new ServiceMinderApiKeyRequiredError();
+    }
+
     const mockRecords = firstArray(mockAppointmentPayload, ["Appointments"]).filter(isRecord);
     const mock = mockRecords.find((record) => appointmentId(record) === targetAppointmentId) ?? null;
     return mock ? normalizeAppointment(mock) : null;

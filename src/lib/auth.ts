@@ -2,14 +2,23 @@ import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
 export function isClerkConfigured() {
+  if (isVercelProtectedAuthEnabled()) return false;
   return Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY);
 }
 
+export function isVercelProtectedAuthEnabled() {
+  return process.env.AUTH_MODE === "vercel-protected";
+}
+
 export function isLocalAuthEnabled() {
-  return process.env.NODE_ENV !== "production" || process.env.AUTH_MODE === "local";
+  return process.env.NODE_ENV !== "production" && process.env.AUTH_MODE === "local";
 }
 
 export async function getCurrentUserId() {
+  if (isVercelProtectedAuthEnabled()) {
+    return "vercel-protected-user";
+  }
+
   if (!isClerkConfigured()) {
     return isLocalAuthEnabled() ? "local-user" : null;
   }

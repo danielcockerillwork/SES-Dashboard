@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireCurrentUserId, unauthorizedResponse } from "@/lib/auth";
 import { conservaRowsToCsv } from "@/lib/export";
-import { getConservaReport } from "@/lib/serviceminder/reporting";
+import { getConservaReport, ServiceMinderApiKeyRequiredError } from "@/lib/serviceminder/reporting";
 import { defaultDateRange } from "@/lib/utils";
 import type { ConservaReportFilters } from "@/lib/serviceminder/types";
 
@@ -57,14 +57,26 @@ export async function GET(request: Request) {
   const userId = await requireCurrentUserId();
   if (!userId) return unauthorizedResponse();
 
-  const result = await getConservaReport(userId, filtersFromRequest(request), {
-    refreshCache: refreshCacheFromRequest(request),
-  });
-  const csv = conservaRowsToCsv(result.rows);
-  return new NextResponse(csv, {
-    headers: {
-      "content-type": "text/csv; charset=utf-8",
-      "content-disposition": `attachment; filename="conserva-ses-score-report.csv"`,
-    },
-  });
+  try {
+    const result = await getConservaReport(userId, filtersFromRequest(request), {
+      refreshCache: refreshCacheFromRequest(request),
+    });
+    const csv = conservaRowsToCsv(result.rows);
+    return new NextResponse(csv, {
+      headers: {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": `attachment; filename="conserva-ses-score-report.csv"`,
+      },
+    });
+  } catch (error) {
+    if (error instanceof ServiceMinderApiKeyRequiredError) {
+      return NextResponse.json(
+        { error: error.message, code: "serviceminder_api_key_required" },
+        { status: 428 },
+      );
+    }
+
+    const message = error instanceof Error ? error.message : "Report data could not be exported.";
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
 }

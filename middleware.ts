@@ -1,10 +1,10 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
+import { isVercelProtectedAuthEnabled } from "@/lib/auth";
 
 const isPublicRoute = createRouteMatcher([
   "/sign-in(.*)",
   "/sign-up(.*)",
-  "/api/reports/conserva/export(.*)",
 ]);
 
 const protectedMiddleware = clerkMiddleware(async (auth, request) => {
@@ -14,10 +14,21 @@ const protectedMiddleware = clerkMiddleware(async (auth, request) => {
 });
 
 export default function middleware(request: NextRequest, event: NextFetchEvent) {
-  if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || !process.env.CLERK_SECRET_KEY) {
+  if (isVercelProtectedAuthEnabled()) {
     return NextResponse.next();
   }
 
+  if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || !process.env.CLERK_SECRET_KEY) {
+    const localAuthEnabled = process.env.NODE_ENV !== "production" && process.env.AUTH_MODE === "local";
+    if (localAuthEnabled || isPublicRoute(request)) return NextResponse.next();
+
+    if (request.nextUrl.pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Authentication is not configured." }, { status: 401 });
+    }
+
+    const signInUrl = new URL("/sign-in", request.url);
+    return NextResponse.redirect(signInUrl);
+  }
   return protectedMiddleware(request, event);
 }
 

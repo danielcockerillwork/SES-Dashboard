@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireCurrentUserId, unauthorizedResponse } from "@/lib/auth";
-import { getConservaAppointmentDetail } from "@/lib/serviceminder/reporting";
+import { getConservaAppointmentDetail, ServiceMinderApiKeyRequiredError } from "@/lib/serviceminder/reporting";
 
 export const runtime = "nodejs";
 
@@ -17,7 +17,21 @@ export async function GET(_request: Request, context: Context) {
     return NextResponse.json({ error: "Appointment id is required." }, { status: 400 });
   }
 
-  const row = await getConservaAppointmentDetail(userId, appointmentId);
+  let row;
+  try {
+    row = await getConservaAppointmentDetail(userId, appointmentId);
+  } catch (error) {
+    if (error instanceof ServiceMinderApiKeyRequiredError) {
+      return NextResponse.json(
+        { error: error.message, code: "serviceminder_api_key_required" },
+        { status: 428 },
+      );
+    }
+
+    const message = error instanceof Error ? error.message : "Appointment could not be loaded.";
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
+
   if (!row) return NextResponse.json({ error: "Appointment not found." }, { status: 404 });
 
   return NextResponse.json({ row: { ...row, raw: undefined } });

@@ -45,7 +45,7 @@ SERVICEMINDER_MAX_RECORDS="5000"
 SERVICEMINDER_APPOINTMENT_CACHE_TTL_SECONDS="86400"
 ```
 
-`AUTH_MODE=local` enables the single local dashboard user when Clerk keys are absent. Remove it after adding Clerk keys for a protected production deployment.
+`AUTH_MODE=local` enables the single local dashboard user only outside production when Clerk keys are absent. For a short-term private Vercel-only deployment, set `AUTH_MODE=vercel-protected` in Vercel Production and enable Vercel Deployment Protection; the app will use one shared protected dashboard user after Vercel authenticates the visitor.
 
 ## Exploratory Appointment Inventory
 
@@ -106,4 +106,6 @@ Completed ServiceMinder appointment payloads are cached in Postgres after a live
 
 ## Deployment
 
-Deploy to Vercel after configuring Clerk, Postgres, encryption, and ServiceMinder environment variables in the Vercel project. Use preview deployments first, then promote or deploy production after `npm test` and `npm run build` pass locally.
+Deploy to Vercel after configuring Clerk, Postgres, encryption, and ServiceMinder environment variables in the Vercel project. Production must have Clerk configured; the app will not fall back to the shared local user there. Disable public sign-up or require invitations in Clerk so shared links only work for approved users. Each signed-in user then saves their own ServiceMinder API key under Settings, and that key is encrypted and scoped to that Clerk user id.
+
+Use preview deployments first, then promote or deploy production after `npm test` and `npm run build` pass locally.
