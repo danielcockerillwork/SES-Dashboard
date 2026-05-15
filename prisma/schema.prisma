@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+model IntegrationSettings {
+  id                    Int       @id @default(autoincrement())
+  userId                String    @unique @default("local-user")
+  apiBaseUrl            String    @default("https://serviceminder.com/api")
+  encryptedApiKey       String?
+  apiKeyHint            String?
+  includeContactDefault Boolean   @default(true)
+  connectionStatus      String    @default("not_configured")
+  lastSuccessfulSync    DateTime?
+  lastError             String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}
+
+model SavedReportView {
+  id         String   @id @default(cuid())
+  userId     String   @default("local-user")
+  name       String
+  reportType String
+  filters    Json
+  columns    Json
+  sorting    Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId])
+  @@index([reportType])
+  @@index([userId, reportType])
+}
+
+model ReportRun {
+  id         String   @id @default(cuid())
+  userId     String   @default("local-user")
+  reportType String
+  filters    Json
+  source     String
+  rowCount   Int
+  rawPayload Json
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([reportType, createdAt])
+  @@index([userId, reportType, createdAt])
+}
+
+model ServiceMinderAppointmentCacheEntry {
+  id             String   @id @default(cuid())
+  userId         String   @default("local-user")
+  apiBaseUrl     String
+  apiKeyHash     String
+  recordKey      String
+  appointmentId  String?
+  reportDate     String
+  includeContact Boolean
+  payload        Json
+  schemaVersion  Int      @default(1)
+  fetchedAt      DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([userId, apiBaseUrl, apiKeyHash, recordKey, includeContact, schemaVersion])
+  @@index([userId, apiBaseUrl, apiKeyHash, includeContact, schemaVersion, reportDate])
+  @@index([appointmentId])
+}
+
+model ServiceMinderAppointmentCacheWindow {
+  id             String   @id @default(cuid())
+  userId         String   @default("local-user")
+  apiBaseUrl     String
+  apiKeyHash     String
+  fromDate       String
+  throughDate    String
+  includeContact Boolean
+  schemaVersion  Int      @default(1)
+  warning        String?
+  fetchedAt      DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([userId, apiBaseUrl, apiKeyHash, fromDate, throughDate, includeContact, schemaVersion])
+  @@index([userId, apiBaseUrl, apiKeyHash, schemaVersion, fromDate, throughDate])
+}

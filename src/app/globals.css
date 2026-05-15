@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --background: 210 20% 98%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --primary: 215 33% 19%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 162 52% 94%;
+  --secondary-foreground: 168 78% 16%;
+  --muted: 210 20% 94%;
+  --muted-foreground: 215 16% 42%;
+  --accent: 205 84% 94%;
+  --accent-foreground: 204 80% 22%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 214 18% 86%;
+  --input: 214 18% 86%;
+  --ring: 204 88% 53%;
+  --radius: 0.5rem;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: 222 24% 8%;
+  --foreground: 210 24% 96%;
+  --card: 222 21% 11%;
+  --card-foreground: 210 24% 96%;
+  --primary: 172 62% 44%;
+  --primary-foreground: 180 100% 8%;
+  --secondary: 218 17% 18%;
+  --secondary-foreground: 195 45% 92%;
+  --muted: 218 16% 18%;
+  --muted-foreground: 215 14% 68%;
+  --accent: 196 56% 18%;
+  --accent-foreground: 195 90% 88%;
+  --destructive: 0 67% 55%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 217 16% 24%;
+  --input: 217 16% 24%;
+  --ring: 174 67% 48%;
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+body {
+  background:
+    linear-gradient(180deg, rgba(232, 242, 248, 0.55) 0, rgba(248, 250, 252, 0) 360px),
+    hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+.dark body {
+  background:
+    radial-gradient(circle at top left, rgba(20, 184, 166, 0.12), transparent 420px),
+    linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0, rgba(15, 23, 42, 0) 360px),
+    hsl(var(--background));
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.table-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.35) transparent;
+}
