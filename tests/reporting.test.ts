@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyExcludedServicesToReport,
   buildConservaReport,
   hydrateAppointmentsWithContacts,
   hydrateAppointmentsWithFirstAppointmentStatus,
   hydrateAppointmentsWithOrganizations,
   lookupOptionsFromServiceMinderResponses,
+  serviceCatalogFromResponse,
   normalizeAppointment,
 } from "@/lib/serviceminder/reporting";
 import { firstArray, isRecord } from "@/lib/serviceminder/field-access";
@@ -24,6 +26,7 @@ describe("Conserva reporting", () => {
     expect(row.hasSesScore).toBe(true);
     expect(row.firstAppointment).toBe(true);
     expect(row.contactVisitCount).toBe(1);
+    expect(row.contactAppointmentCounts.total).toBe(1);
     expect(row.appointmentTotal).toBe(0);
     expect(row.contactLifetimeValue).toBe(1240.5);
     expect(row.appointmentNotes).toContain("Completed controller inspection");
@@ -68,6 +71,7 @@ describe("Conserva reporting", () => {
     });
 
     expect(row.appointmentUrl).toBe("https://serviceminder.com/o/2088/appointments/details/41855785");
+    expect(row.organizationName).toBe("Conserva of South NJ");
     expect(row.status).toBe("Completed");
   });
 
@@ -243,6 +247,42 @@ describe("Conserva reporting", () => {
     expect(row.appointmentUrl).toBe("https://serviceminder.com/o/2088/appointments/details/41855785");
   });
 
+  it("replaces generated organization id labels with API-key organization names", () => {
+    const [hydrated] = hydrateAppointmentsWithOrganizations(
+      [
+        {
+          AppointmentId: 41855785,
+          OrganizationId: 2088,
+          OrganizationName: "Organization 2088",
+          Status: "Complete",
+          ActualFinish: "2026-05-14T09:50:00-04:00",
+        },
+      ],
+      {
+        Organizations: [
+          {
+            OrganizationId: 2088,
+            PublicName: "Conserva Greenville",
+          },
+        ],
+      },
+    );
+
+    const row = normalizeAppointment(hydrated);
+    expect(row.organizationName).toBe("Conserva Greenville");
+  });
+
+  it("uses the known organization name when ServiceMinder only exposes the organization id", () => {
+    const row = normalizeAppointment({
+      AppointmentId: 41855785,
+      OrganizationId: 2088,
+      Status: "Complete",
+      ActualFinish: "2026-05-14T09:50:00-04:00",
+    });
+
+    expect(row.organizationName).toBe("Conserva of South NJ");
+  });
+
   it("uses the single API-key organization when appointments omit organization fields", () => {
     const [hydrated] = hydrateAppointmentsWithOrganizations(
       [
@@ -265,6 +305,22 @@ describe("Conserva reporting", () => {
     const row = normalizeAppointment(hydrated);
     expect(row.organizationId).toBe("2088");
     expect(row.organizationName).toBe("Conserva Greenville");
+  });
+
+  it("builds a service catalog from ServiceMinder services responses", () => {
+    const services = serviceCatalogFromResponse({
+      Services: [
+        { ServiceId: 10, Name: "Irrigation Inspection" },
+        { ServiceId: 11, ServiceName: "Controller Audit" },
+        { ServiceId: 12, Title: "New System Quote" },
+      ],
+    });
+
+    expect(services).toEqual([
+      { id: "11", name: "Controller Audit" },
+      { id: "10", name: "Irrigation Inspection" },
+      { id: "12", name: "New System Quote" },
+    ]);
   });
 
   it("builds lookup options from direct ServiceMinder lookup API responses", () => {
@@ -327,6 +383,8 @@ describe("Conserva reporting", () => {
                       AppointmentId: 1,
                       ContactId: 501,
                       DateTime: "2026-04-01T09:00:00-04:00",
+                      ActualFinish: "2026-04-01T10:00:00-04:00",
+                      Status: "Complete",
                     },
                   ]
                 : [
@@ -334,6 +392,8 @@ describe("Conserva reporting", () => {
                       AppointmentId: 12,
                       ContactId: 502,
                       DateTime: "2026-05-12T09:00:00-04:00",
+                      ActualFinish: "2026-05-12T10:00:00-04:00",
+                      Status: "Complete",
                     },
                   ],
             rawResponses: [],
@@ -347,13 +407,107 @@ describe("Conserva reporting", () => {
     const rows = hydrated.map(normalizeAppointment);
     expect(rows.map((row) => row.firstAppointment)).toEqual([false, true]);
     expect(rows.map((row) => row.contactVisitCount)).toEqual([2, 1]);
+    expect(rows.map((row) => row.contactAppointmentCounts.total)).toEqual([2, 1]);
+    expect(rows.map((row) => row.contactAppointmentCounts.completed)).toEqual([2, 1]);
+    expect(rows.map((row) => row.contactAppointmentCounts.upcoming)).toEqual([0, 0]);
     expect(calls).toHaveLength(2);
-    expect(calls).toEqual(
+    expect(calls.map((call) => ({ contactId: call.contactId, fromDate: call.fromDate }))).toEqual(
       expect.arrayContaining([
-        { contactId: "501", fromDate: "1900-01-01", throughDate: "2026-05-10" },
-        { contactId: "502", fromDate: "1900-01-01", throughDate: "2026-05-12" },
+        { contactId: "501", fromDate: "1900-01-01" },
+        { contactId: "502", fromDate: "1900-01-01" },
       ]),
     );
+    expect(calls.every((call) => call.throughDate >= "2026-05-12")).toBe(true);
+  });
+
+  it("splits contact appointment counts into completed and upcoming appointments", async () => {
+    const hydrated = await hydrateAppointmentsWithFirstAppointmentStatus(
+      [
+        {
+          AppointmentId: 21,
+          ContactId: 601,
+          DateTime: "2026-05-10T09:00:00-04:00",
+          ActualFinish: "2026-05-10T10:00:00-04:00",
+          Status: "Complete",
+        },
+      ],
+      {
+        async queryAppointments() {
+          return {
+            items: [
+              {
+                AppointmentId: 21,
+                ContactId: 601,
+                DateTime: "2026-05-10T09:00:00-04:00",
+                ActualFinish: "2026-05-10T10:00:00-04:00",
+                Status: "Complete",
+              },
+              {
+                AppointmentId: 22,
+                ContactId: 601,
+                DateTime: "2026-06-10T09:00:00-04:00",
+                Status: "Scheduled",
+              },
+              {
+                AppointmentId: 23,
+                ContactId: 601,
+                DateTime: "2026-07-10T09:00:00-04:00",
+                Status: "Scheduled",
+              },
+            ],
+            rawResponses: [],
+            totalCount: null,
+            warning: null,
+          };
+        },
+      },
+    );
+
+    const [row] = hydrated.map(normalizeAppointment);
+    expect(row.contactVisitCount).toBe(3);
+    expect(row.contactAppointmentCounts).toEqual({ total: 3, completed: 1, upcoming: 2 });
+  });
+
+  it("deduplicates contact appointment history before counting fallback-key matches", async () => {
+    const hydrated = await hydrateAppointmentsWithFirstAppointmentStatus(
+      [
+        {
+          ContactId: 602,
+          DateTime: "2026-05-10T09:00:00-04:00",
+          ActualFinish: "2026-05-10T10:00:00-04:00",
+          Status: "Complete",
+          ServiceName: "Maintenance Visit",
+        },
+      ],
+      {
+        async queryAppointments() {
+          return {
+            items: [
+              {
+                ContactId: 602,
+                DateTime: "2026-05-10T09:00:00-04:00",
+                ActualFinish: "2026-05-10T10:00:00-04:00",
+                Status: "Complete",
+                ServiceName: "Maintenance Visit",
+              },
+              {
+                ContactId: 602,
+                DateTime: "2026-06-10T09:00:00-04:00",
+                Status: "Scheduled",
+                ServiceName: "Maintenance Visit",
+              },
+            ],
+            rawResponses: [],
+            totalCount: null,
+            warning: null,
+          };
+        },
+      },
+    );
+
+    const [row] = hydrated.map(normalizeAppointment);
+    expect(row.contactVisitCount).toBe(2);
+    expect(row.contactAppointmentCounts).toEqual({ total: 2, completed: 1, upcoming: 1 });
   });
 
   it("summarizes completed appointments, SES score coverage, and appointment status metrics", () => {
@@ -473,5 +627,103 @@ describe("Conserva reporting", () => {
 
     expect(report.rows).toHaveLength(3);
     expect(new Set(report.rows.map((row) => row.serviceName))).toEqual(new Set(["Controller Audit", "Repair Visit"]));
+  });
+
+  it("excludes configured services case-insensitively from report rows", () => {
+    const report = buildConservaReport(
+      appointmentRecords,
+      {
+        from: "2026-05-01",
+        through: "2026-05-31",
+        excludedServiceNames: ["repair visit"],
+      },
+      "mock",
+      [mockAppointmentPayload],
+    );
+
+    expect(report.rows.every((row) => row.serviceName?.toLowerCase() !== "repair visit")).toBe(true);
+  });
+
+  it("excludes quote service categories even when settings do not name them", () => {
+    const report = buildConservaReport(
+      [
+        ...appointmentRecords,
+        {
+          AppointmentId: "quote-1",
+          Status: "Complete",
+          ActualFinish: "2026-05-08T09:30:00-04:00",
+          ServiceName: "New System Quote",
+          Contact: { Name: "Avery Quote" },
+          contact: { cust_sesscore: 82 },
+        },
+        {
+          AppointmentId: "quote-2",
+          Status: "Complete",
+          ActualFinish: "2026-05-08T10:30:00-04:00",
+          ServiceName: "Backyard Drainage Estimate",
+          Contact: { Name: "Blake Drainage" },
+          contact: { cust_sesscore: 88 },
+        },
+        {
+          AppointmentId: "quote-3",
+          Status: "Complete",
+          ActualFinish: "2026-05-08T11:30:00-04:00",
+          ServiceName: "Installation Estimate",
+          Contact: { Name: "Casey Install" },
+          contact: { cust_sesscore: 90 },
+        },
+      ],
+      {
+        from: "2026-05-01",
+        through: "2026-05-31",
+      },
+      "mock",
+      [mockAppointmentPayload],
+    );
+
+    expect(
+      report.rows.every(
+        (row) =>
+          row.serviceName !== "New System Quote" &&
+          row.serviceName !== "Backyard Drainage Estimate" &&
+          row.serviceName !== "Installation Estimate",
+      ),
+    ).toBe(true);
+  });
+
+  it("rebuilds report summaries after excluded services are removed", () => {
+    const filtered = applyExcludedServicesToReport(
+      buildConservaReport(
+        appointmentRecords,
+        {
+          from: "2026-05-01",
+          through: "2026-05-31",
+        },
+        "mock",
+        [mockAppointmentPayload],
+      ),
+      ["Repair Visit", "Seasonal Startup"],
+    );
+
+    expect(filtered.rows.every((row) => row.serviceName !== "Repair Visit" && row.serviceName !== "Seasonal Startup")).toBe(true);
+    expect(filtered.summary.completedAppointments).toBe(filtered.rows.length);
+    expect(filtered.summary.completedAppointments).toBeLessThan(6);
+  });
+
+  it("excludes configured services from report rows", () => {
+    const report = buildConservaReport(
+      appointmentRecords,
+      {
+        from: "2026-05-01",
+        through: "2026-05-31",
+        excludedServiceNames: ["Repair Visit", "Seasonal Startup"],
+      },
+      "mock",
+      [mockAppointmentPayload],
+    );
+
+    expect(report.rows.every((row) => row.serviceName !== "Repair Visit" && row.serviceName !== "Seasonal Startup")).toBe(true);
+    expect(report.summary.completedAppointments).toBe(report.rows.length);
+    expect(report.rows.length).toBeLessThan(6);
   });
 });

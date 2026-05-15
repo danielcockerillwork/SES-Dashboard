@@ -23,9 +23,11 @@ import {
   Target,
   TrendingDown,
   Trash2,
+  Wrench,
   X,
 } from "lucide-react";
 import { DateRangeFields } from "@/components/date-range-fields";
+import { MultiSelectFilter } from "@/components/multi-select-filter";
 import { MetricCard } from "@/components/metric-card";
 import { PageHeading } from "@/components/page-heading";
 import { Badge } from "@/components/ui/badge";
@@ -44,6 +46,9 @@ import {
   relativeDateRange,
   type DateRangePreset,
 } from "@/lib/utils";
+import type { PublicSettings } from "@/lib/settings";
+import { applyExcludedServicesToReport } from "@/lib/serviceminder/reporting";
+import { isExcludedServiceName } from "@/lib/serviceminder/service-exclusions";
 import {
   buildSesValueAnalytics,
   LOW_SES_SCORE_THRESHOLD,
@@ -73,12 +78,6 @@ type SavedView = {
   id: string;
   name: string;
   filters: Record<string, unknown>;
-};
-
-type AppointmentPreviewState = {
-  row: PublicRow;
-  top: number;
-  left: number;
 };
 
 type LookupOptions = {
@@ -138,7 +137,6 @@ type DrilldownMetricKey = "completed" | "hasSesScore" | "averageSesScore" | "fir
 type AppointmentColumnFilters = {
   id: string;
   appointmentDate: string;
-  organization: string;
   service: string;
   hasSesScore: "" | "yes" | "no";
   score: string;
@@ -146,14 +144,11 @@ type AppointmentColumnFilters = {
   lifetimeValue: string;
   firstAppointment: "" | "yes" | "no";
   contactVisits: string;
-  weekNumber: string;
-  status: string;
 };
 
 const emptyAppointmentColumnFilters: AppointmentColumnFilters = {
   id: "",
   appointmentDate: "",
-  organization: "",
   service: "",
   hasSesScore: "",
   score: "",
@@ -161,8 +156,6 @@ const emptyAppointmentColumnFilters: AppointmentColumnFilters = {
   lifetimeValue: "",
   firstAppointment: "",
   contactVisits: "",
-  weekNumber: "",
-  status: "",
 };
 
 const drilldownMetricLabels: Record<DrilldownMetricKey, string> = {
@@ -175,7 +168,7 @@ const drilldownMetricLabels: Record<DrilldownMetricKey, string> = {
 };
 
 function selectClassName() {
-  return "h-9 w-full min-w-0 rounded-md border bg-background px-3 text-sm text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  return "h-9 w-full min-w-0 rounded-md border bg-background px-3 text-sm text-foreground shadow-sm outline-none focus-visible:border-primary/50 focus-visible:ring-2 focus-visible:ring-ring";
 }
 
 function uniqueOptions(rows: PublicRow[], key: "serviceAgentName" | "serviceName" | "organizationName") {
@@ -227,7 +220,7 @@ type DashboardFilters = {
 };
 
 const DEFAULT_DATE_PRESET: DateRangePreset = "last-7-days";
-const dashboardStorageKey = "conserva-dashboard-state:v2";
+const dashboardStorageKey = "conserva-dashboard-state:v3";
 
 function createDefaultFilters(): DashboardFilters {
   const range = relativeDateRange(DEFAULT_DATE_PRESET);
@@ -352,6 +345,24 @@ function serviceSummary(selected: string[]) {
   return `${selected.length} services`;
 }
 
+function withoutExcludedServices(serviceTypes: string[], excludedServiceNames: string[]) {
+  return serviceTypes.filter((name) => !isExcludedServiceName(name, excludedServiceNames));
+}
+
+function reportCacheKey(paramsKey: string, excludedServiceNames: string[]) {
+  const exclusionsKey = [...excludedServiceNames].sort().join("\u0001");
+  return `${paramsKey}::ex:${exclusionsKey}`;
+}
+
+function isPublicSettings(value: unknown): value is PublicSettings {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "apiBaseUrl" in value &&
+      Array.isArray((value as PublicSettings).excludedServiceNames),
+  );
+}
+
 function isLookupOrganization(value: unknown): LookupOptions["currentOrganization"] {
   if (!value || typeof value !== "object") return null;
   const record = value as Partial<NonNullable<LookupOptions["currentOrganization"]>>;
@@ -375,6 +386,21 @@ function isReportResponse(value: unknown): value is ReportResponse {
     Array.isArray(record.fieldSummaries) &&
     Array.isArray(record.scoreTrends)
   );
+}
+
+function mergeAppointmentPreviewDetail(row: PublicRow, detail: PublicRow): PublicRow {
+  return {
+    ...row,
+    servicePrice: detail.servicePrice,
+    lineItems: detail.lineItems,
+    partsTotal: detail.partsTotal,
+    jobTotal: detail.jobTotal,
+    appointmentTotal: detail.appointmentTotal ?? row.appointmentTotal,
+    appointmentNotes: detail.appointmentNotes ?? row.appointmentNotes,
+    serviceName: detail.serviceName ?? row.serviceName,
+    serviceAgentName: detail.serviceAgentName ?? row.serviceAgentName,
+    status: detail.status ?? row.status,
+  };
 }
 
 function readDashboardStorage() {
@@ -447,34 +473,46 @@ function previewText(value: string | null | undefined) {
   return value?.trim() || "—";
 }
 
+function formatAppointmentCounts(row: PublicRow) {
+  const counts = row.contactAppointmentCounts;
+  if (!counts || counts.total === null) return formatNumber(row.contactVisitCount);
+  return `${formatNumber(counts.total)} total · ${formatNumber(counts.completed)} completed · ${formatNumber(counts.upcoming)} upcoming`;
+}
+
 function PreviewDetail({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 rounded-md border bg-background/70 px-3 py-2">
+    <div className="min-w-0 rounded-md border bg-background/80 px-3 py-2">
       <p className="text-[11px] font-medium uppercase tracking-normal text-muted-foreground">{label}</p>
       <p className="mt-1 truncate text-sm font-semibold text-foreground">{value}</p>
     </div>
   );
 }
 
-function AppointmentPreviewTooltip({ preview }: { preview: AppointmentPreviewState | null }) {
-  if (!preview) return null;
+function formatQuantity(value: number) {
+  return Number.isInteger(value) ? String(value) : formatNumber(value, { maximumFractionDigits: 2 });
+}
 
-  const { row } = preview;
+function AppointmentDetailsPanel({
+  row,
+  loadingDetails,
+  detailError,
+}: {
+  row: PublicRow;
+  loadingDetails: boolean;
+  detailError: string | null;
+}) {
+  const lineItems = Array.isArray(row.lineItems) ? row.lineItems : [];
+  const hasServicePrice = typeof row.servicePrice === "number";
+  const hasLineItems = lineItems.length > 0;
+  const hasCostBlock = hasServicePrice || hasLineItems;
+  const previewTotal = row.jobTotal ?? row.appointmentTotal;
 
   return (
-    <div
-      id="appointment-preview-tooltip"
-      role="tooltip"
-      className="pointer-events-none fixed z-50 w-[min(calc(100vw-2rem),24rem)] overflow-hidden rounded-lg border bg-card/95 text-card-foreground shadow-2xl shadow-slate-900/15 backdrop-blur"
-      style={{
-        left: preview.left,
-        top: preview.top,
-      }}
-    >
-      <div className="border-b bg-muted/30 px-4 py-3">
+    <div className="rounded-md border bg-card text-card-foreground">
+      <div className="border-b bg-accent/35 px-4 py-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-[11px] font-medium uppercase tracking-normal text-muted-foreground">Appointment preview</p>
+            <p className="text-[11px] font-medium uppercase tracking-normal text-muted-foreground">Appointment details</p>
             <p className="mt-1 truncate text-base font-semibold">{previewText(row.customerName)}</p>
           </div>
           <Badge variant={row.hasSesScore ? "good" : "warning"}>{row.hasSesScore ? `SES ${row.sesScore?.displayValue ?? "—"}` : "No SES"}</Badge>
@@ -482,19 +520,72 @@ function AppointmentPreviewTooltip({ preview }: { preview: AppointmentPreviewSta
         <p className="mt-2 truncate text-xs text-muted-foreground">{formatDate(row.appointmentDate ?? row.completedDate)}</p>
       </div>
 
-      <div className="max-h-[min(78vh,520px)] overflow-y-auto p-4">
+      <div className="p-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <PreviewDetail label="Customer" value={previewText(row.customerName)} />
           <PreviewDetail label="Service" value={previewText(row.serviceName)} />
-          <PreviewDetail label="Total" value={formatCurrency(row.appointmentTotal)} />
           <PreviewDetail label="Lifetime value" value={formatCurrency(row.contactLifetimeValue)} />
-          <PreviewDetail label="Contact visits" value={formatNumber(row.contactVisitCount)} />
+          <PreviewDetail label="Appointments" value={formatAppointmentCounts(row)} />
           <PreviewDetail label="Technician" value={previewText(row.serviceAgentName)} />
           <PreviewDetail label="SES score" value={row.sesScore?.displayValue || "—"} />
           <PreviewDetail label="Status" value={previewText(row.status)} />
         </div>
 
-        <div className="mt-3 rounded-md border bg-muted/25 p-3">
+        <div className="mt-3 rounded-md border bg-accent/25 p-3">
+          <div className="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-normal text-muted-foreground">
+            <Wrench className="h-3.5 w-3.5" aria-hidden="true" />
+            Work / line items
+          </div>
+          {hasCostBlock ? (
+            <>
+              <ul className="space-y-3 text-sm">
+                {hasServicePrice ? (
+                  <li className="rounded-md border bg-background/80 px-3 py-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-medium text-foreground">{previewText(row.serviceName)}</span>
+                      <span className="font-semibold text-foreground">{formatCurrency(row.servicePrice)}</span>
+                    </div>
+                  </li>
+                ) : null}
+                {lineItems.map((item, index) => (
+                  <li key={`${item.name}-${index}`} className="rounded-md border bg-background/80 px-3 py-2">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <span className="min-w-0 font-medium text-foreground">{item.name}</span>
+                      {item.total !== null ? (
+                        <span className="font-semibold text-foreground">{formatCurrency(item.total)}</span>
+                      ) : null}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                      <span>
+                        Qty {formatQuantity(item.quantity)}
+                        {item.unitOfMeasure ? ` ${item.unitOfMeasure}` : ""}
+                      </span>
+                      {item.unitPrice !== null ? <span>{formatCurrency(item.unitPrice)} each</span> : null}
+                      {item.sku ? <span>SKU {item.sku}</span> : null}
+                    </div>
+                    {item.notes ? <p className="mt-2 whitespace-pre-wrap break-words text-xs text-muted-foreground">{item.notes}</p> : null}
+                  </li>
+                ))}
+              </ul>
+              {previewTotal !== null ? (
+                <div className="mt-3 flex justify-between border-t pt-3 text-sm font-semibold text-foreground">
+                  <span>Total</span>
+                  <span>{formatCurrency(previewTotal)}</span>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {loadingDetails
+                ? "Loading line items from ServiceMinder..."
+                : detailError
+                  ? detailError
+                  : "No line items returned by ServiceMinder."}
+            </p>
+          )}
+        </div>
+
+        <div className="mt-3 rounded-md border bg-accent/25 p-3">
           <p className="text-[11px] font-medium uppercase tracking-normal text-muted-foreground">Notes</p>
           <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
             {row.appointmentNotes?.trim() || "No appointment notes recorded."}
@@ -505,80 +596,11 @@ function AppointmentPreviewTooltip({ preview }: { preview: AppointmentPreviewSta
   );
 }
 
-function MultiSelectFilter({
-  id,
-  label,
-  options,
-  value,
-  onChange,
-}: {
-  id: string;
-  label: string;
-  options: string[];
-  value: string[];
-  onChange: (value: string[]) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const selected = new Set(value);
-
-  function toggleOption(option: string) {
-    const next = selected.has(option) ? value.filter((item) => item !== option) : [...value, option];
-    onChange(next);
-  }
-
-  return (
-    <div className="relative grid gap-2">
-      <Label htmlFor={id}>{label}</Label>
-      <button
-        id={id}
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-        className={`${selectClassName()} flex items-center justify-between gap-2 text-left`}
-      >
-        <span className="truncate">{serviceSummary(value)}</span>
-        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-      </button>
-      {open ? (
-        <div className="absolute left-0 right-0 top-full z-40 mt-2 max-h-72 overflow-y-auto rounded-md border bg-card p-2 shadow-lg">
-          <div className="mb-2 flex items-center justify-between gap-2 border-b pb-2">
-            <span className="px-2 text-xs font-medium text-muted-foreground">{value.length ? `${value.length} selected` : "All services"}</span>
-            {value.length ? (
-              <button
-                type="button"
-                onClick={() => onChange([])}
-                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-              >
-                <X className="h-3.5 w-3.5" aria-hidden="true" />
-                Clear
-              </button>
-            ) : null}
-          </div>
-          <div role="listbox" aria-multiselectable="true" className="grid gap-1">
-            {options.map((option) => (
-              <label key={option} className="flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-sm hover:bg-muted">
-                <input
-                  type="checkbox"
-                  checked={selected.has(option)}
-                  onChange={() => toggleOption(option)}
-                  className="h-4 w-4 rounded border-input accent-primary"
-                />
-                <span className="truncate">{option}</span>
-              </label>
-            ))}
-            {!options.length ? <p className="px-2 py-2 text-sm text-muted-foreground">No services in this result set.</p> : null}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 function tabButtonClassName(active: boolean) {
   return [
     "inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-    active ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-muted hover:text-foreground",
+    active ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
   ].join(" ");
 }
 
@@ -625,6 +647,22 @@ function booleanFilterMatches(value: boolean | null, filter: "" | "yes" | "no") 
   return filter === "yes" ? value : !value;
 }
 
+function appointmentCountsSearchText(row: PublicRow) {
+  const counts = row.contactAppointmentCounts;
+  return [
+    row.contactVisitCount,
+    counts?.total,
+    counts?.completed,
+    counts?.upcoming,
+    counts?.total === null || counts?.total === undefined ? null : `${counts.total} total`,
+    counts?.completed === null || counts?.completed === undefined ? null : `${counts.completed} completed`,
+    counts?.upcoming === null || counts?.upcoming === undefined ? null : `${counts.upcoming} upcoming`,
+    formatAppointmentCounts(row),
+  ]
+    .filter((value) => value !== null && value !== undefined)
+    .join(" ");
+}
+
 function rowsForDrilldownMetric(rows: PublicRow[], metric: DrilldownMetricKey) {
   switch (metric) {
     case "hasSesScore":
@@ -647,7 +685,6 @@ function rowMatchesColumnFilters(row: PublicRow, filters: AppointmentColumnFilte
     includesText(row.id, filters.id) &&
     (includesText(formatDate(row.appointmentDate ?? row.completedDate), filters.appointmentDate) ||
       includesText(row.appointmentDate ?? row.completedDate, filters.appointmentDate)) &&
-    includesText(row.organizationName, filters.organization) &&
     includesText(row.serviceName, filters.service) &&
     booleanFilterMatches(row.hasSesScore, filters.hasSesScore) &&
     includesText(row.sesScore?.displayValue, filters.score) &&
@@ -655,9 +692,7 @@ function rowMatchesColumnFilters(row: PublicRow, filters: AppointmentColumnFilte
     (includesText(formatCurrency(row.contactLifetimeValue), filters.lifetimeValue) ||
       includesText(row.contactLifetimeValue, filters.lifetimeValue)) &&
     booleanFilterMatches(row.firstAppointment, filters.firstAppointment) &&
-    includesText(row.contactVisitCount, filters.contactVisits) &&
-    includesText(row.weekNumber, filters.weekNumber) &&
-    includesText(row.status, filters.status)
+    includesText(appointmentCountsSearchText(row), filters.contactVisits)
   );
 }
 
@@ -669,7 +704,7 @@ function SegmentTable({ title, rows }: { title: string; rows: SesValueSegment[] 
   const displayedRows = rows.slice(0, 6);
 
   return (
-    <div className="min-w-0 rounded-md border bg-muted/20">
+    <div className="min-w-0 rounded-md border bg-accent/20">
       <div className="border-b px-4 py-3">
         <h4 className="text-sm font-semibold">{title}</h4>
       </div>
@@ -718,7 +753,7 @@ function AnalyticsBandChart({ analytics }: { analytics: SesValueAnalytics<Public
   return (
     <div className="grid gap-3">
       {analytics.bands.map((band) => (
-        <div key={band.key} className="rounded-md border bg-muted/25 p-3">
+        <div key={band.key} className="rounded-md border bg-accent/20 p-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="font-medium">SES {band.label}</p>
@@ -748,13 +783,19 @@ function AnalyticsBandChart({ analytics }: { analytics: SesValueAnalytics<Public
 function AnalyticsOutlierTable({
   analytics,
   loading,
-  onPreview,
-  onClearPreview,
+  expandedAppointmentId,
+  appointmentDetailRow,
+  toggleAppointmentDetails,
 }: {
   analytics: SesValueAnalytics<PublicRow>;
   loading: boolean;
-  onPreview: (row: PublicRow, target: HTMLElement) => void;
-  onClearPreview: () => void;
+  expandedAppointmentId: string | null;
+  appointmentDetailRow: (row: PublicRow) => {
+    row: PublicRow;
+    loadingDetails: boolean;
+    detailError: string | null;
+  };
+  toggleAppointmentDetails: (row: PublicRow) => void;
 }) {
   return (
     <Card className="mt-6">
@@ -766,7 +807,7 @@ function AnalyticsOutlierTable({
       </CardHeader>
       <CardContent>
         <div className="table-scrollbar overflow-x-auto">
-          <table className="w-full min-w-[980px] text-left text-sm">
+          <table className="w-full min-w-[900px] text-left text-sm">
             <thead className="border-b text-xs uppercase text-muted-foreground">
               <tr>
                 <th className="px-3 py-3 font-medium">Appt Id</th>
@@ -775,53 +816,74 @@ function AnalyticsOutlierTable({
                 <th className="px-3 py-3 font-medium">Value</th>
                 <th className="px-3 py-3 font-medium">Service</th>
                 <th className="px-3 py-3 font-medium">Technician</th>
-                <th className="px-3 py-3 font-medium">Org</th>
                 <th className="px-3 py-3 font-medium">Date</th>
               </tr>
             </thead>
             <tbody>
-              {analytics.outliers.slice(0, 12).map((point) => (
-                <tr
-                  key={point.row.id ?? `${point.row.customerName}-${point.row.completedDate}-${point.value}`}
-                  tabIndex={0}
-                  onMouseEnter={(event) => onPreview(point.row, event.currentTarget)}
-                  onFocus={(event) => onPreview(point.row, event.currentTarget)}
-                  onMouseLeave={onClearPreview}
-                  onBlur={(event) => {
-                    if (!event.currentTarget.contains(event.relatedTarget)) onClearPreview();
-                  }}
-                  className="border-b transition-colors hover:bg-muted/45 focus-visible:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0 last:border-0"
-                >
-                  <td className="px-3 py-3 font-mono text-xs">
-                    {point.row.appointmentUrl ? (
-                      <a
-                        href={point.row.appointmentUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        title="Open appointment"
-                        className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
-                      >
-                        {point.row.id ?? "Open"}
-                        <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                      </a>
-                    ) : (
-                      point.row.id ?? "—"
-                    )}
-                  </td>
-                  <td className="px-3 py-3">{point.row.customerName ?? "—"}</td>
-                  <td className="px-3 py-3">
-                    <Badge variant="warning">{formatScore(point.score)}</Badge>
-                  </td>
-                  <td className="px-3 py-3 font-semibold">{formatCurrency(point.value)}</td>
-                  <td className="px-3 py-3">{point.row.serviceName ?? "—"}</td>
-                  <td className="px-3 py-3">{point.row.serviceAgentName ?? "—"}</td>
-                  <td className="px-3 py-3">{point.row.organizationName ?? "—"}</td>
-                  <td className="px-3 py-3">{formatDate(point.row.completedDate ?? point.row.appointmentDate)}</td>
-                </tr>
-              ))}
+              {analytics.outliers.slice(0, 12).map((point) => {
+                const appointmentId = point.row.id ?? `${point.row.customerName}-${point.row.completedDate}-${point.value}`;
+                const expanded = Boolean(point.row.id && expandedAppointmentId === point.row.id);
+                const detail = appointmentDetailRow(point.row);
+
+                return (
+                  <Fragment key={appointmentId}>
+                    <tr className="border-b transition-colors hover:bg-accent/35 last:border-0">
+                      <td className="px-3 py-3 font-mono text-xs">
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleAppointmentDetails(point.row)}
+                            disabled={!point.row.id}
+                            aria-expanded={expanded}
+                            aria-controls={point.row.id ? `analytics-appointment-details-${point.row.id}` : undefined}
+                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                            title={expanded ? "Collapse appointment details" : "Expand appointment details"}
+                          >
+                            {expanded ? <ChevronDown className="h-4 w-4" aria-hidden="true" /> : <ChevronRight className="h-4 w-4" aria-hidden="true" />}
+                            <span className="sr-only">{expanded ? "Collapse appointment details" : "Expand appointment details"}</span>
+                          </button>
+                          {point.row.appointmentUrl ? (
+                            <a
+                              href={point.row.appointmentUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              title="Open appointment"
+                              className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+                            >
+                              {point.row.id ?? "Open"}
+                              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                            </a>
+                          ) : (
+                            point.row.id ?? "—"
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3">{point.row.customerName ?? "—"}</td>
+                      <td className="px-3 py-3">
+                        <Badge variant="warning">{formatScore(point.score)}</Badge>
+                      </td>
+                      <td className="px-3 py-3 font-semibold">{formatCurrency(point.value)}</td>
+                      <td className="px-3 py-3">{point.row.serviceName ?? "—"}</td>
+                      <td className="px-3 py-3">{point.row.serviceAgentName ?? "—"}</td>
+                      <td className="px-3 py-3">{formatDate(point.row.completedDate ?? point.row.appointmentDate)}</td>
+                    </tr>
+                    {expanded ? (
+                      <tr id={`analytics-appointment-details-${point.row.id}`} className="border-b bg-accent/20">
+                        <td colSpan={7} className="px-3 py-4">
+                          <AppointmentDetailsPanel
+                            row={detail.row}
+                            loadingDetails={detail.loadingDetails}
+                            detailError={detail.detailError}
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
               {!analytics.outliers.length ? (
                 <tr>
-                  <td className="px-3 py-8 text-center text-muted-foreground" colSpan={8}>
+                  <td className="px-3 py-8 text-center text-muted-foreground" colSpan={7}>
                     {loading ? "Loading analytics..." : "No low-score high-ticket appointments for the current filters."}
                   </td>
                 </tr>
@@ -838,14 +900,20 @@ function AnalyticsTab({
   analytics,
   firstVisitCoverage,
   loading,
-  onPreview,
-  onClearPreview,
+  expandedAppointmentId,
+  appointmentDetailRow,
+  toggleAppointmentDetails,
 }: {
   analytics: SesValueAnalytics<PublicRow>;
   firstVisitCoverage: ReturnType<typeof firstVisitSesScoreCoverage>;
   loading: boolean;
-  onPreview: (row: PublicRow, target: HTMLElement) => void;
-  onClearPreview: () => void;
+  expandedAppointmentId: string | null;
+  appointmentDetailRow: (row: PublicRow) => {
+    row: PublicRow;
+    loadingDetails: boolean;
+    detailError: string | null;
+  };
+  toggleAppointmentDetails: (row: PublicRow) => void;
 }) {
   const segmentTables = [
     { title: "By Service", rows: analytics.segments.service },
@@ -918,19 +986,19 @@ function AnalyticsTab({
             <CardDescription>Current filtered rows grouped by low versus non-low SES scores.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="rounded-md border bg-muted/25 p-3">
+            <div className="rounded-md border bg-accent/20 p-3">
               <p className="text-xs text-muted-foreground">Low SES avg value</p>
               <p className="mt-1 text-2xl font-semibold">{formatCurrency(analytics.lowScoreAverageValue)}</p>
               <p className="mt-1 text-xs text-muted-foreground">{formatNumber(analytics.lowScoreCount)} appointments</p>
             </div>
-            <div className="rounded-md border bg-muted/25 p-3">
+            <div className="rounded-md border bg-accent/20 p-3">
               <p className="text-xs text-muted-foreground">SES {LOW_SES_SCORE_THRESHOLD}+ avg value</p>
               <p className="mt-1 text-2xl font-semibold">{formatCurrency(analytics.nonLowScoreAverageValue)}</p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {formatNumber(Math.max(0, analytics.analyzableRows - analytics.lowScoreCount))} appointments
               </p>
             </div>
-            <div className="rounded-md border bg-muted/25 p-3">
+            <div className="rounded-md border bg-accent/20 p-3">
               <p className="text-xs text-muted-foreground">Analyzable total value</p>
               <p className="mt-1 text-2xl font-semibold">{formatCurrency(analytics.totalValue)}</p>
               <p className="mt-1 text-xs text-muted-foreground">Avg SES {formatScore(analytics.averageScore)}</p>
@@ -942,8 +1010,9 @@ function AnalyticsTab({
       <AnalyticsOutlierTable
         analytics={analytics}
         loading={loading}
-        onPreview={onPreview}
-        onClearPreview={onClearPreview}
+        expandedAppointmentId={expandedAppointmentId}
+        appointmentDetailRow={appointmentDetailRow}
+        toggleAppointmentDetails={toggleAppointmentDetails}
       />
 
       <Card className="mt-6">
@@ -975,9 +1044,12 @@ export default function DashboardPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [lookupOptions, setLookupOptions] = useState<LookupOptions>(emptyLookupOptions);
+  const [excludedServiceNames, setExcludedServiceNames] = useState<string[]>([]);
   const [viewName, setViewName] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
-  const [appointmentPreview, setAppointmentPreview] = useState<AppointmentPreviewState | null>(null);
+  const [expandedAppointmentId, setExpandedAppointmentId] = useState<string | null>(null);
+  const [appointmentDetailCache, setAppointmentDetailCache] = useState<Record<string, PublicRow>>({});
+  const [appointmentDetailErrors, setAppointmentDetailErrors] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
   const [activeDrilldownMetric, setActiveDrilldownMetric] = useState<DrilldownMetricKey>("completed");
   const [appointmentColumnFilters, setAppointmentColumnFilters] = useState<AppointmentColumnFilters>(emptyAppointmentColumnFilters);
@@ -985,7 +1057,15 @@ export default function DashboardPage() {
 
   const params = useMemo(() => paramsFromFilters(appliedFilters), [appliedFilters]);
   const paramsKey = params.toString();
+  const activeReportCacheKey = useMemo(
+    () => reportCacheKey(paramsKey, excludedServiceNames),
+    [excludedServiceNames, paramsKey],
+  );
   const hasPendingFilterChanges = !filtersEqual(draftFilters, appliedFilters);
+  const visibleReport = useMemo(
+    () => applyExcludedServicesToReport(report, excludedServiceNames),
+    [excludedServiceNames, report],
+  );
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -1008,7 +1088,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    if (!hydratedDashboardState || loadedReportParams !== paramsKey) return;
+    if (!hydratedDashboardState || loadedReportParams !== activeReportCacheKey) return;
     try {
       window.localStorage.setItem(
         dashboardStorageKey,
@@ -1035,15 +1115,15 @@ export default function DashboardPage() {
     currentPage,
     draftFilters,
     hydratedDashboardState,
+    activeReportCacheKey,
     loadedReportParams,
     pageSize,
-    paramsKey,
     report,
   ]);
 
   useEffect(() => {
     if (!hydratedDashboardState) return;
-    if (loadedReportParams === paramsKey) return;
+    if (loadedReportParams === activeReportCacheKey) return;
 
     let active = true;
 
@@ -1056,7 +1136,7 @@ export default function DashboardPage() {
         if (!response.ok || !isReportResponse(data)) throw new Error("Report data could not be loaded.");
         if (active) {
           setReport(data);
-          setLoadedReportParams(requestParams.toString());
+          setLoadedReportParams(activeReportCacheKey);
           setNotice(null);
         }
       } catch (error) {
@@ -1073,7 +1153,7 @@ export default function DashboardPage() {
     return () => {
       active = false;
     };
-  }, [hydratedDashboardState, loadedReportParams, params, paramsKey]);
+  }, [activeReportCacheKey, hydratedDashboardState, loadedReportParams, params]);
 
   useEffect(() => {
     fetch("/api/saved-views")
@@ -1089,20 +1169,50 @@ export default function DashboardPage() {
       .catch(() => setLookupOptions(emptyLookupOptions));
   }, []);
 
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: unknown) => {
+        if (!isPublicSettings(data)) return;
+        setExcludedServiceNames(data.excludedServiceNames);
+        setDraftFilters((current) => ({
+          ...current,
+          serviceTypes: withoutExcludedServices(current.serviceTypes, data.excludedServiceNames),
+        }));
+        setAppliedFilters((current) => ({
+          ...current,
+          serviceTypes: withoutExcludedServices(current.serviceTypes, data.excludedServiceNames),
+        }));
+      })
+      .catch(() => setExcludedServiceNames([]));
+  }, []);
+
   const serviceAgentOptions = Array.from(
-    new Set([...lookupOptions.serviceAgents.map((agent) => agent.name), ...uniqueOptions(report.rows, "serviceAgentName")]),
+    new Set([...lookupOptions.serviceAgents.map((agent) => agent.name), ...uniqueOptions(visibleReport.rows, "serviceAgentName")]),
   ).sort();
   const serviceOptions = Array.from(
-    new Set([...lookupOptions.services.map((service) => service.name), ...uniqueOptions(report.rows, "serviceName"), ...draftFilters.serviceTypes]),
-  ).sort();
+    new Set([
+      ...lookupOptions.services.map((service) => service.name),
+      ...uniqueOptions(visibleReport.rows, "serviceName"),
+      ...draftFilters.serviceTypes,
+    ]),
+  )
+    .filter((name) => !isExcludedServiceName(name, excludedServiceNames))
+    .sort();
   const organizationOptions = Array.from(
-    new Set([...lookupOptions.organizations.map((nextOrganization) => nextOrganization.name), ...uniqueOptions(report.rows, "organizationName")]),
+    new Set([
+      ...lookupOptions.organizations.map((nextOrganization) => nextOrganization.name),
+      ...uniqueOptions(visibleReport.rows, "organizationName"),
+    ]),
   ).sort();
   const dashboardTitle = `SES Score Dashboard - ${organizationTitleSuffix(appliedFilters.organization, organizationOptions, lookupOptions.currentOrganization)}`;
-  const sesField = report.fieldSummaries.find((field) => field.name === "SES Score") ?? report.fieldSummaries[0] ?? null;
-  const trendMax = Math.max(...report.scoreTrends.map((trend) => trend.average ?? 0), 1);
+  const sesField = visibleReport.fieldSummaries.find((field) => field.name === "SES Score") ?? visibleReport.fieldSummaries[0] ?? null;
+  const trendMax = Math.max(...visibleReport.scoreTrends.map((trend) => trend.average ?? 0), 1);
   const exportHref = `/api/reports/conserva/export?${params.toString()}`;
-  const drilldownMetricRows = useMemo(() => rowsForDrilldownMetric(report.rows, activeDrilldownMetric), [report.rows, activeDrilldownMetric]);
+  const drilldownMetricRows = useMemo(
+    () => rowsForDrilldownMetric(visibleReport.rows, activeDrilldownMetric),
+    [activeDrilldownMetric, visibleReport.rows],
+  );
   const drilldownRows = useMemo(
     () => drilldownMetricRows.filter((row) => rowMatchesColumnFilters(row, appointmentColumnFilters)),
     [appointmentColumnFilters, drilldownMetricRows],
@@ -1115,8 +1225,8 @@ export default function DashboardPage() {
   const pageStart = totalRows ? pageStartIndex + 1 : 0;
   const pageEnd = totalRows ? pageStartIndex + pagedRows.length : 0;
   const paginationPages = paginationRange(activePage, totalPages);
-  const analytics = useMemo(() => buildSesValueAnalytics(report.rows), [report.rows]);
-  const firstVisitCoverage = useMemo(() => firstVisitSesScoreCoverage(report.rows), [report.rows]);
+  const analytics = useMemo(() => buildSesValueAnalytics(visibleReport.rows), [visibleReport.rows]);
+  const firstVisitCoverage = useMemo(() => firstVisitSesScoreCoverage(visibleReport.rows), [visibleReport.rows]);
   const columnFilterCount = activeColumnFilterCount(appointmentColumnFilters);
 
   function updateDraftDatePreset(nextPreset: DateRangePreset) {
@@ -1146,7 +1256,7 @@ export default function DashboardPage() {
       const data = (await response.json()) as unknown;
       if (!response.ok || !isReportResponse(data)) throw new Error("Report data could not be refreshed.");
       setReport(data);
-      setLoadedReportParams(params.toString());
+      setLoadedReportParams(activeReportCacheKey);
       setNotice(null);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Report data could not be refreshed.");
@@ -1218,27 +1328,41 @@ export default function DashboardPage() {
     setCurrentPage(1);
   }
 
-  function showAppointmentPreview(row: PublicRow, target: HTMLElement) {
-    const tooltipWidth = 384;
-    const viewportPadding = 16;
-    const viewportTopPadding = 72;
-    const tooltipMaxHeight = Math.min(window.innerHeight - viewportTopPadding - viewportPadding, 420);
-    const rowGap = 12;
-    const rect = target.getBoundingClientRect();
-    const left = Math.min(
-      Math.max(rect.left + 12, viewportPadding),
-      Math.max(viewportPadding, window.innerWidth - tooltipWidth - viewportPadding),
-    );
-    const hasRoomAbove = rect.top - viewportTopPadding > tooltipMaxHeight + rowGap;
-    const top = hasRoomAbove
-      ? Math.max(viewportTopPadding, rect.top - rowGap - tooltipMaxHeight)
-      : Math.min(rect.bottom + rowGap, Math.max(viewportTopPadding, window.innerHeight - tooltipMaxHeight - viewportPadding));
+  function appointmentDetailRow(row: PublicRow) {
+    const appointmentId = row.id ?? "";
+    const cachedDetail = appointmentId ? appointmentDetailCache[appointmentId] : undefined;
+    const detailError = appointmentId ? appointmentDetailErrors[appointmentId] ?? null : null;
+    return {
+      row: cachedDetail ? mergeAppointmentPreviewDetail(row, cachedDetail) : row,
+      loadingDetails: Boolean(appointmentId && expandedAppointmentId === appointmentId && !cachedDetail && !detailError),
+      detailError,
+    };
+  }
 
-    setAppointmentPreview({
-      row,
-      left,
-      top,
-    });
+  function toggleAppointmentDetails(row: PublicRow) {
+    const appointmentId = row.id ?? "";
+    if (!appointmentId) return;
+
+    setExpandedAppointmentId((current) => (current === appointmentId ? null : appointmentId));
+
+    if (!appointmentDetailCache[appointmentId] && !appointmentDetailErrors[appointmentId]) {
+      void fetchAppointmentPreviewDetail(appointmentId);
+    }
+  }
+
+  async function fetchAppointmentPreviewDetail(appointmentId: string) {
+    try {
+      const response = await fetch(`/api/reports/conserva/appointments/${encodeURIComponent(appointmentId)}`);
+      const data = (await response.json()) as unknown;
+      if (!response.ok || !data || typeof data !== "object" || !("row" in data) || !isReportResponse({ ...emptyReport, rows: [(data as { row: unknown }).row] })) {
+        throw new Error("Appointment line items could not be loaded.");
+      }
+      const detail = (data as { row: PublicRow }).row;
+      setAppointmentDetailCache((current) => ({ ...current, [appointmentId]: detail }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Appointment line items could not be loaded.";
+      setAppointmentDetailErrors((current) => ({ ...current, [appointmentId]: message }));
+    }
   }
 
   return (
@@ -1254,7 +1378,7 @@ export default function DashboardPage() {
         </Button>
         <a
           href={exportHref}
-          className="inline-flex h-9 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium shadow-sm hover:bg-muted"
+          className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary/20 bg-background px-4 text-sm font-medium shadow-sm hover:bg-accent hover:text-accent-foreground"
         >
           <Download className="h-4 w-4" />
           Export CSV
@@ -1265,6 +1389,16 @@ export default function DashboardPage() {
         <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-200">
           {report.warning}
         </div>
+      ) : null}
+
+      {excludedServiceNames.length ? (
+        <p className="mt-4 text-sm text-muted-foreground">
+          Hiding {excludedServiceNames.length} service{excludedServiceNames.length === 1 ? "" : "s"} from settings
+          {excludedServiceNames.length <= 3 ? `: ${excludedServiceNames.join(", ")}` : ""}.{" "}
+          <a href="/settings" className="font-medium text-foreground underline-offset-4 hover:underline">
+            Change exclusions
+          </a>
+        </p>
       ) : null}
 
       <Card className="mt-6 lg:sticky lg:top-14 lg:z-30">
@@ -1320,6 +1454,8 @@ export default function DashboardPage() {
             label="Services"
             options={serviceOptions}
             value={draftFilters.serviceTypes}
+            summary={serviceSummary}
+            emptySelectionLabel="All services"
             onChange={(value) => {
               setDraftFilters((current) => ({ ...current, serviceTypes: value }));
             }}
@@ -1391,7 +1527,7 @@ export default function DashboardPage() {
               }}
             />
           </div>
-          <div className="flex min-h-9 items-center gap-3 rounded-md border bg-muted/40 px-3">
+          <div className="flex min-h-9 items-center gap-3 rounded-md border bg-accent/30 px-3">
             <Switch
               id="missingSesScore"
               checked={draftFilters.missingSesScore}
@@ -1434,7 +1570,7 @@ export default function DashboardPage() {
       <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <MetricCard
           label="Completed appointments"
-          value={loading ? "…" : formatNumber(report.summary.completedAppointments)}
+          value={loading ? "…" : formatNumber(visibleReport.summary.completedAppointments)}
           icon={CheckCircle2}
           tone="good"
           selected={activeDrilldownMetric === "completed"}
@@ -1442,8 +1578,8 @@ export default function DashboardPage() {
         />
         <MetricCard
           label="Has SES score"
-          value={loading ? "…" : formatNumber(report.summary.appointmentsWithSesScore)}
-          detail={formatPercent(report.summary.sesScoreCoverageRate)}
+          value={loading ? "…" : formatNumber(visibleReport.summary.appointmentsWithSesScore)}
+          detail={formatPercent(visibleReport.summary.sesScoreCoverageRate)}
           icon={FileSpreadsheet}
           tone="info"
           selected={activeDrilldownMetric === "hasSesScore"}
@@ -1451,8 +1587,8 @@ export default function DashboardPage() {
         />
         <MetricCard
           label="Average SES score"
-          value={loading ? "…" : formatScore(report.summary.averageSesScore)}
-          detail={`${formatScore(report.summary.minSesScore)}-${formatScore(report.summary.maxSesScore)} range`}
+          value={loading ? "…" : formatScore(visibleReport.summary.averageSesScore)}
+          detail={`${formatScore(visibleReport.summary.minSesScore)}-${formatScore(visibleReport.summary.maxSesScore)} range`}
           icon={Star}
           tone="good"
           selected={activeDrilldownMetric === "averageSesScore"}
@@ -1460,16 +1596,16 @@ export default function DashboardPage() {
         />
         <MetricCard
           label="First appointments"
-          value={loading ? "…" : formatNumber(report.summary.firstAppointments)}
-          detail={formatCurrency(report.summary.totalAppointmentValue)}
+          value={loading ? "…" : formatNumber(visibleReport.summary.firstAppointments)}
+          detail={formatCurrency(visibleReport.summary.totalAppointmentValue)}
           icon={Target}
           selected={activeDrilldownMetric === "firstAppointments"}
           onClick={() => selectDrilldownMetric("firstAppointments")}
         />
         <MetricCard
           label="First visits with SES"
-          value={loading ? "…" : formatPercent(report.summary.firstAppointmentSesScoreCoverageRate)}
-          detail={`${formatNumber(report.summary.firstAppointmentsWithSesScore)} of ${formatNumber(report.summary.firstAppointments)}`}
+          value={loading ? "…" : formatPercent(visibleReport.summary.firstAppointmentSesScoreCoverageRate)}
+          detail={`${formatNumber(visibleReport.summary.firstAppointmentsWithSesScore)} of ${formatNumber(visibleReport.summary.firstAppointments)}`}
           icon={FileSpreadsheet}
           tone="info"
           selected={activeDrilldownMetric === "firstVisitsWithSes"}
@@ -1477,9 +1613,9 @@ export default function DashboardPage() {
         />
         <MetricCard
           label="Missing SES score"
-          value={loading ? "…" : formatNumber(report.summary.missingSesScore)}
+          value={loading ? "…" : formatNumber(visibleReport.summary.missingSesScore)}
           icon={AlertTriangle}
-          tone={report.summary.missingSesScore ? "warning" : "default"}
+          tone={visibleReport.summary.missingSesScore ? "warning" : "default"}
           selected={activeDrilldownMetric === "missingSesScore"}
           onClick={() => selectDrilldownMetric("missingSesScore")}
         />
@@ -1493,7 +1629,7 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent>
             {sesField ? (
-              <div className="rounded-md border bg-muted/30 p-4">
+              <div className="rounded-md border bg-accent/20 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="truncate font-medium">contact.cust_sesscore</p>
@@ -1547,11 +1683,11 @@ export default function DashboardPage() {
             </div>
             <div className="space-y-2">
               {savedViews.map((view) => (
-                <div key={view.id} className="flex items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2">
+                <div key={view.id} className="flex items-center justify-between gap-2 rounded-md border bg-accent/20 px-3 py-2">
                   <button type="button" className="truncate text-left text-sm font-medium" onClick={() => applyView(view)}>
                     {view.name}
                   </button>
-                  <button type="button" className="rounded-md p-1.5 text-muted-foreground hover:bg-background hover:text-foreground" onClick={() => deleteView(view.id)} aria-label={`Delete ${view.name}`}>
+                  <button type="button" className="rounded-md p-1.5 text-muted-foreground hover:bg-background hover:text-primary" onClick={() => deleteView(view.id)} aria-label={`Delete ${view.name}`}>
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </div>
@@ -1569,8 +1705,8 @@ export default function DashboardPage() {
         </CardHeader>
         <CardContent>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {report.scoreTrends.slice(0, 9).map((trend) => (
-              <div key={`${trend.period}-${trend.fieldName}`} className="rounded-md border bg-muted/30 p-3">
+            {visibleReport.scoreTrends.slice(0, 9).map((trend) => (
+              <div key={`${trend.period}-${trend.fieldName}`} className="rounded-md border bg-accent/20 p-3">
                 <div className="flex items-center justify-between gap-2 text-sm">
                   <span className="truncate font-medium">{trend.fieldName}</span>
                   <span className="font-mono text-muted-foreground">{trend.period}</span>
@@ -1584,7 +1720,7 @@ export default function DashboardPage() {
                 </div>
               </div>
             ))}
-            {!report.scoreTrends.length ? <p className="text-sm text-muted-foreground">No numeric SES score trends for the current filters.</p> : null}
+            {!visibleReport.scoreTrends.length ? <p className="text-sm text-muted-foreground">No numeric SES score trends for the current filters.</p> : null}
           </div>
         </CardContent>
       </Card>
@@ -1638,23 +1774,20 @@ export default function DashboardPage() {
         </CardHeader>
         <CardContent>
           <div className="table-scrollbar overflow-x-auto">
-            <table className="w-full min-w-[1280px] text-left text-sm">
+            <table className="w-full min-w-[1080px] text-left text-sm">
               <thead className="border-b text-xs uppercase text-muted-foreground">
                 <tr>
                   <th className="px-3 py-3 font-medium">Appt Id</th>
                   <th className="px-3 py-3 font-medium">Appointment Date</th>
-                  <th className="px-3 py-3 font-medium">Org</th>
                   <th className="px-3 py-3 font-medium">Service</th>
                   <th className="px-3 py-3 font-medium">Has SES Score?</th>
                   <th className="px-3 py-3 font-medium">Score</th>
                   <th className="px-3 py-3 font-medium">Total</th>
                   <th className="px-3 py-3 font-medium">Lifetime Value</th>
                   <th className="px-3 py-3 font-medium">First Appt?</th>
-                  <th className="px-3 py-3 font-medium">Contact Visits</th>
-                  <th className="px-3 py-3 font-medium">Week #</th>
-                  <th className="px-3 py-3 font-medium">Status</th>
+                  <th className="px-3 py-3 font-medium">Appointments</th>
                 </tr>
-                <tr className="border-t bg-muted/20 normal-case">
+                <tr className="border-t bg-accent/20 normal-case">
                   <th className="px-3 py-2">
                     <Input
                       value={appointmentColumnFilters.id}
@@ -1669,14 +1802,6 @@ export default function DashboardPage() {
                       onChange={(event) => updateAppointmentColumnFilter("appointmentDate", event.target.value)}
                       placeholder="Date"
                       className="h-8 min-w-32 text-xs"
-                    />
-                  </th>
-                  <th className="px-3 py-2">
-                    <Input
-                      value={appointmentColumnFilters.organization}
-                      onChange={(event) => updateAppointmentColumnFilter("organization", event.target.value)}
-                      placeholder="Org"
-                      className="h-8 min-w-28 text-xs"
                     />
                   </th>
                   <th className="px-3 py-2">
@@ -1741,78 +1866,81 @@ export default function DashboardPage() {
                     <Input
                       value={appointmentColumnFilters.contactVisits}
                       onChange={(event) => updateAppointmentColumnFilter("contactVisits", event.target.value)}
-                      placeholder="Visits"
-                      className="h-8 min-w-24 text-xs"
-                    />
-                  </th>
-                  <th className="px-3 py-2">
-                    <Input
-                      value={appointmentColumnFilters.weekNumber}
-                      onChange={(event) => updateAppointmentColumnFilter("weekNumber", event.target.value)}
-                      placeholder="Week"
-                      className="h-8 min-w-20 text-xs"
-                    />
-                  </th>
-                  <th className="px-3 py-2">
-                    <Input
-                      value={appointmentColumnFilters.status}
-                      onChange={(event) => updateAppointmentColumnFilter("status", event.target.value)}
-                      placeholder="Status"
-                      className="h-8 min-w-28 text-xs"
+                      placeholder="Appts"
+                      className="h-8 min-w-32 text-xs"
                     />
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {pagedRows.map((row) => (
-                  <tr
-                    key={row.id ?? `${row.customerName}-${row.completedDate}`}
-                    tabIndex={0}
-                    aria-describedby={appointmentPreview?.row === row ? "appointment-preview-tooltip" : undefined}
-                    onMouseEnter={(event) => showAppointmentPreview(row, event.currentTarget)}
-                    onFocus={(event) => showAppointmentPreview(row, event.currentTarget)}
-                    onMouseLeave={() => setAppointmentPreview(null)}
-                    onBlur={(event) => {
-                      if (!event.currentTarget.contains(event.relatedTarget)) setAppointmentPreview(null);
-                    }}
-                    className="border-b transition-colors hover:bg-muted/45 focus-visible:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0 last:border-0"
-                  >
-                    <td className="px-3 py-3 font-mono text-xs">
-                      {row.appointmentUrl ? (
-                        <a
-                          href={row.appointmentUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          title="Open appointment"
-                          className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
-                        >
-                          {row.id ?? "Open"}
-                          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                        </a>
-                      ) : (
-                        row.id ?? "—"
-                      )}
-                    </td>
-                    <td className="px-3 py-3">{formatDate(row.appointmentDate ?? row.completedDate)}</td>
-                    <td className="px-3 py-3">{row.organizationName ?? "—"}</td>
-                    <td className="px-3 py-3">{row.serviceName ?? "—"}</td>
-                    <td className="px-3 py-3">
-                      <Badge variant={row.hasSesScore ? "good" : "warning"}>{row.hasSesScore ? "Yes" : "No"}</Badge>
-                    </td>
-                    <td className="px-3 py-3 font-semibold">{row.sesScore?.displayValue || "—"}</td>
-                    <td className="px-3 py-3">{formatCurrency(row.appointmentTotal)}</td>
-                    <td className="px-3 py-3">{formatCurrency(row.contactLifetimeValue)}</td>
-                    <td className="px-3 py-3">
-                      {row.firstAppointment === null ? "—" : row.firstAppointment ? "Yes" : "No"}
-                    </td>
-                    <td className="px-3 py-3">{formatNumber(row.contactVisitCount)}</td>
-                    <td className="px-3 py-3">{row.weekNumber ?? "—"}</td>
-                    <td className="px-3 py-3">{row.status ?? "—"}</td>
-                  </tr>
-                ))}
+                {pagedRows.map((row) => {
+                  const appointmentId = row.id ?? `${row.customerName}-${row.completedDate}`;
+                  const expanded = Boolean(row.id && expandedAppointmentId === row.id);
+                  const detail = appointmentDetailRow(row);
+
+                  return (
+                    <Fragment key={appointmentId}>
+                      <tr className="border-b transition-colors hover:bg-accent/35 last:border-0">
+                        <td className="px-3 py-3 font-mono text-xs">
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => toggleAppointmentDetails(row)}
+                              disabled={!row.id}
+                              aria-expanded={expanded}
+                              aria-controls={row.id ? `appointment-details-${row.id}` : undefined}
+                              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                              title={expanded ? "Collapse appointment details" : "Expand appointment details"}
+                            >
+                              {expanded ? <ChevronDown className="h-4 w-4" aria-hidden="true" /> : <ChevronRight className="h-4 w-4" aria-hidden="true" />}
+                              <span className="sr-only">{expanded ? "Collapse appointment details" : "Expand appointment details"}</span>
+                            </button>
+                            {row.appointmentUrl ? (
+                              <a
+                                href={row.appointmentUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                title="Open appointment"
+                                className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+                              >
+                                {row.id ?? "Open"}
+                                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                              </a>
+                            ) : (
+                              row.id ?? "—"
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3">{formatDate(row.appointmentDate ?? row.completedDate)}</td>
+                        <td className="px-3 py-3">{row.serviceName ?? "—"}</td>
+                        <td className="px-3 py-3">
+                          <Badge variant={row.hasSesScore ? "good" : "warning"}>{row.hasSesScore ? "Yes" : "No"}</Badge>
+                        </td>
+                        <td className="px-3 py-3 font-semibold">{row.sesScore?.displayValue || "—"}</td>
+                        <td className="px-3 py-3">{formatCurrency(row.appointmentTotal)}</td>
+                        <td className="px-3 py-3">{formatCurrency(row.contactLifetimeValue)}</td>
+                        <td className="px-3 py-3">
+                          {row.firstAppointment === null ? "—" : row.firstAppointment ? "Yes" : "No"}
+                        </td>
+                        <td className="px-3 py-3 text-xs text-muted-foreground">{formatAppointmentCounts(row)}</td>
+                      </tr>
+                      {expanded ? (
+                        <tr id={`appointment-details-${row.id}`} className="border-b bg-accent/20">
+                          <td colSpan={9} className="px-3 py-4">
+                            <AppointmentDetailsPanel
+                              row={detail.row}
+                              loadingDetails={detail.loadingDetails}
+                              detailError={detail.detailError}
+                            />
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
                 {!pagedRows.length ? (
                   <tr>
-                    <td className="px-3 py-8 text-center text-muted-foreground" colSpan={12}>
+                    <td className="px-3 py-8 text-center text-muted-foreground" colSpan={9}>
                       {loading ? "Loading appointments..." : "No appointments for the current filters."}
                     </td>
                   </tr>
@@ -1865,7 +1993,7 @@ export default function DashboardPage() {
           <CardDescription>Use the local script to confirm contact.cust_sesscore and the appointment status fields in live Conserva payloads.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center gap-3 rounded-md border bg-muted/30 px-4 py-3 text-sm">
+          <div className="flex items-center gap-3 rounded-md border bg-accent/20 px-4 py-3 text-sm">
             <BarChart3 className="h-4 w-4 text-muted-foreground" />
             <code className="font-mono whitespace-pre-wrap">
               {`SERVICEMINDER_API_KEY="..." npm run explore:appointments -- --from ${appliedFilters.from} --through ${appliedFilters.through}`}
@@ -1879,12 +2007,11 @@ export default function DashboardPage() {
           analytics={analytics}
           firstVisitCoverage={firstVisitCoverage}
           loading={loading}
-          onPreview={showAppointmentPreview}
-          onClearPreview={() => setAppointmentPreview(null)}
+          expandedAppointmentId={expandedAppointmentId}
+          appointmentDetailRow={appointmentDetailRow}
+          toggleAppointmentDetails={toggleAppointmentDetails}
         />
       )}
-
-      <AppointmentPreviewTooltip preview={appointmentPreview} />
     </main>
   );
 }

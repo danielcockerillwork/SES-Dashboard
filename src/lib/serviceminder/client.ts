@@ -142,8 +142,8 @@ export class ServiceMinderClient {
     return this.post("serviceagents/all", { IncludeInactive: false });
   }
 
-  async services() {
-    return this.post("services/all", { IncludeInactive: false });
+  async services(options?: { includeInactive?: boolean }) {
+    return this.post("services/all", { IncludeInactive: options?.includeInactive ?? false });
   }
 
   async organizations() {
@@ -199,6 +199,27 @@ export class ServiceMinderClient {
       params.take,
       params.maxRecords,
     );
+  }
+
+  async appointmentDetails(appointmentId: string | number) {
+    return this.post("appointments/find", {
+      AppointmentId: appointmentId,
+      IncludeContact: true,
+      IncludeCompleted: true,
+      IncludeNotes: true,
+      IncludeInternalNotes: true,
+      IncludeCustomerNotes: true,
+      IncludeCustomFields: true,
+      IncludeParts: true,
+      IncludeLineItems: true,
+      IncludeProposal: true,
+    });
+  }
+
+  async proposalDetails(proposalId: string | number) {
+    return this.post("proposal/details", {
+      Id: proposalId,
+    });
   }
 
   private async queryPaged(

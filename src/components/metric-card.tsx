@@ -14,9 +14,9 @@ type MetricCardProps = {
 
 const tones = {
   default: "bg-muted text-muted-foreground",
-  good: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
+  good: "bg-accent text-accent-foreground dark:bg-secondary/15 dark:text-accent-foreground",
   warning: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
-  info: "bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300",
+  info: "bg-primary/10 text-primary dark:bg-primary/20 dark:text-primary",
 };
 
 export function MetricCard({ label, value, detail, icon: Icon, tone = "default", selected = false, onClick }: MetricCardProps) {
@@ -37,8 +37,8 @@ export function MetricCard({ label, value, detail, icon: Icon, tone = "default",
       }}
       className={cn(
         interactive &&
-          "cursor-pointer transition-colors hover:border-primary/60 hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        selected && "border-primary bg-primary/5 ring-1 ring-primary/35",
+          "cursor-pointer transition-colors hover:border-primary/60 hover:bg-accent/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        selected && "border-primary bg-primary/5 ring-1 ring-primary/35 dark:bg-primary/10",
       )}
     >
       <CardContent className="p-5">

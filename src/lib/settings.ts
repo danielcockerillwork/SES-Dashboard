@@ -6,11 +6,23 @@ import type { ServiceMinderOrganizationIdentity } from "@/lib/serviceminder/iden
 export const DEFAULT_BASE_URL =
   process.env.SERVICEMINDER_DEFAULT_BASE_URL ?? "https://serviceminder.com/api";
 
+export function parseExcludedServiceNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter((item): item is string => item.length > 0),
+    ),
+  ];
+}
+
 export type PublicSettings = {
   apiBaseUrl: string;
   apiKeyConfigured: boolean;
   apiKeyHint: string | null;
   includeContactDefault: boolean;
+  excludedServiceNames: string[];
   connectionStatus: string;
   lastSuccessfulSync: string | null;
   lastError: string | null;
@@ -24,6 +36,7 @@ export function fallbackPublicSettings(lastError: string | null = null): PublicS
     apiKeyConfigured: false,
     apiKeyHint: null,
     includeContactDefault: true,
+    excludedServiceNames: [],
     connectionStatus: isDatabaseConfigured() ? "not_configured" : "database_not_configured",
     lastSuccessfulSync: null,
     lastError,
@@ -59,6 +72,7 @@ export function publicSettings(
     apiKeyConfigured: Boolean(settings.encryptedApiKey),
     apiKeyHint: settings.apiKeyHint,
     includeContactDefault: settings.includeContactDefault,
+    excludedServiceNames: parseExcludedServiceNames(settings.excludedServiceNames),
     connectionStatus: settings.connectionStatus,
     lastSuccessfulSync: settings.lastSuccessfulSync?.toISOString() ?? null,
     lastError: settings.lastError,

@@ -1,6 +1,6 @@
 import type { ConservaAppointmentRow } from "@/lib/serviceminder/types";
 
-export const LOW_SES_SCORE_THRESHOLD = 80;
+export const LOW_SES_SCORE_THRESHOLD = 50;
 export const HIGH_TICKET_PERCENTILE = 0.75;
 
 export type AnalyticsAppointmentRow = Pick<
@@ -29,7 +29,7 @@ export type SesValuePoint<T extends AnalyticsAppointmentRow = AnalyticsAppointme
 };
 
 export type SesValueBand = {
-  key: "lt70" | "70-79" | "80-89" | "90plus";
+  key: "lt50" | "50-69" | "70-79" | "80-89" | "90plus";
   label: string;
   count: number;
   averageScore: number | null;
@@ -80,7 +80,8 @@ const SES_BANDS: Array<{
   label: string;
   matches: (score: number) => boolean;
 }> = [
-  { key: "lt70", label: "<70", matches: (score) => score < 70 },
+  { key: "lt50", label: "<50", matches: (score) => score < 50 },
+  { key: "50-69", label: "50-69", matches: (score) => score >= 50 && score < 70 },
   { key: "70-79", label: "70-79", matches: (score) => score >= 70 && score < 80 },
   { key: "80-89", label: "80-89", matches: (score) => score >= 80 && score < 90 },
   { key: "90plus", label: "90+", matches: (score) => score >= 90 },

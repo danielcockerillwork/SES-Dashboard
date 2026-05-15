@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { getPrisma, isDatabaseConfigured } from "@/lib/db";
-import { getDecryptedApiKey, getSettings } from "@/lib/settings";
+import { getDecryptedApiKey, getSettings, parseExcludedServiceNames } from "@/lib/settings";
 import { redactSecrets } from "@/lib/security";
 import {
   appointmentCacheRecordKey,
@@ -10,6 +10,7 @@ import {
   type AppointmentCacheRecord,
 } from "@/lib/serviceminder/appointment-cache";
 import { displayCustomFieldValue, extractCustomFields, summarizeFieldValues } from "@/lib/serviceminder/custom-fields";
+import { isExcludedServiceName } from "@/lib/serviceminder/service-exclusions";
 import { ServiceMinderClient } from "@/lib/serviceminder/client";
 import {
   booleanField,
@@ -23,6 +24,7 @@ import {
 } from "@/lib/serviceminder/field-access";
 import { mockAppointmentPayload } from "@/lib/serviceminder/fixtures";
 import type {
+  AppointmentLineItem,
   ConservaAppointmentRow,
   ConservaReportFilters,
   ConservaReportResult,
@@ -107,6 +109,7 @@ const ORGANIZATION_RECORD_NAME_CANDIDATES = [
   "LocationName",
   "LocationId",
 ];
+const KNOWN_ORGANIZATION_NAMES = new Map([["2088", "Conserva of South NJ"]]);
 
 const SERVICE_AGENT_RECORD_ID_CANDIDATES = [
   "Id",
@@ -125,7 +128,8 @@ const SERVICE_AGENT_RECORD_NAME_CANDIDATES = [
   "TechnicianName",
 ];
 
-const SERVICE_RECORD_NAME_CANDIDATES = ["Name", "ServiceName", "Description", "Label"];
+const SERVICE_RECORD_NAME_CANDIDATES = ["Name", "ServiceName", "Title", "Description", "Label", "PublicName"];
+const SERVICE_RECORD_ID_CANDIDATES = ["ServiceId", "ServiceID", "Id", "ID"];
 
 const APPOINTMENT_ID_CANDIDATES = ["AppointmentId", "AppointmentID", "Id", "ID", "Appointment.Id", "Appointment.ID"];
 const CONTACT_ID_CANDIDATES = ["ContactId", "ContactID", "Contact.Id", "Contact.ID"];
@@ -174,6 +178,18 @@ type LookupOptionResponses = {
 
 type ConservaReportOptions = {
   refreshCache?: boolean;
+};
+
+type SummarizableAppointmentRow = Omit<ConservaAppointmentRow, "raw">;
+
+type ReportWithSummarizableRows<Row extends SummarizableAppointmentRow> = {
+  source: ConservaReportResult["source"];
+  warning: string | null;
+  rows: Row[];
+  summary: ConservaReportSummary;
+  fieldSummaries: ReturnType<typeof summarizeFieldValues>;
+  scoreTrends: ScoreTrendPoint[];
+  rawPayloads: unknown[];
 };
 
 function actualFinishDate(raw: RawRecord) {
@@ -293,7 +309,10 @@ function organizationId(raw: RawRecord) {
 }
 
 function organizationName(raw: RawRecord) {
-  return stringField(raw, ORGANIZATION_NAME_CANDIDATES);
+  const id = organizationId(raw);
+  const name = stringField(raw, ORGANIZATION_NAME_CANDIDATES);
+  if (!name || generatedOrganizationLabel(name, id)) return id ? KNOWN_ORGANIZATION_NAMES.get(id) ?? name : name;
+  return name;
 }
 
 function organizationRecordId(raw: RawRecord) {
@@ -301,7 +320,13 @@ function organizationRecordId(raw: RawRecord) {
 }
 
 function organizationRecordName(raw: RawRecord) {
-  return stringField(raw, ORGANIZATION_RECORD_NAME_CANDIDATES);
+  const id = organizationRecordId(raw);
+  return stringField(raw, ORGANIZATION_RECORD_NAME_CANDIDATES) ?? (id ? KNOWN_ORGANIZATION_NAMES.get(id) ?? null : null);
+}
+
+function generatedOrganizationLabel(name: string | null, id: string | null) {
+  if (!name || !id) return false;
+  return name.trim().toLowerCase() === `organization ${id.trim()}`.toLowerCase();
 }
 
 function serviceAgentRecordId(raw: RawRecord) {
@@ -316,8 +341,47 @@ function serviceRecordName(raw: RawRecord) {
   return stringField(raw, SERVICE_RECORD_NAME_CANDIDATES);
 }
 
+function serviceRecordId(raw: RawRecord) {
+  return stringField(raw, SERVICE_RECORD_ID_CANDIDATES);
+}
+
+export type ServiceCatalogEntry = {
+  id: string | null;
+  name: string;
+};
+
+export function serviceCatalogFromResponse(servicesResponse: unknown): ServiceCatalogEntry[] {
+  const serviceRecords = firstArray(servicesResponse, [
+    "Services",
+    "services",
+    "ServiceTypes",
+    "serviceTypes",
+    "Items",
+    "Results",
+    "Matches",
+    "Data",
+  ]).filter(isRecord);
+
+  const byName = new Map<string, ServiceCatalogEntry>();
+  for (const record of serviceRecords) {
+    const name = serviceRecordName(record);
+    if (!name) continue;
+    const id = serviceRecordId(record);
+    if (!byName.has(name)) {
+      byName.set(name, { id, name });
+    }
+  }
+
+  return Array.from(byName.values()).sort((left, right) => left.name.localeCompare(right.name));
+}
+
 function appointmentId(raw: RawRecord) {
   return stringField(raw, APPOINTMENT_ID_CANDIDATES);
+}
+
+function appointmentSourceRecord(raw: RawRecord) {
+  const slot = firstArray(raw, ["Slots", "slots"]).find(isRecord);
+  return slot ? { ...raw, ...slot } : raw;
 }
 
 function contactId(raw: RawRecord) {
@@ -389,6 +453,141 @@ function appointmentTotal(raw: RawRecord) {
     "InvoiceTotal",
     "Invoice.Total",
   ]);
+}
+
+function servicePrice(raw: RawRecord) {
+  return numberField(raw, [
+    "ServiceTotal",
+    "serviceTotal",
+    "ServiceSubtotal",
+    "serviceSubtotal",
+    "ServicePrice",
+    "servicePrice",
+    "ServiceAmount",
+    "serviceAmount",
+    "BasePrice",
+    "basePrice",
+    "Subtotal",
+    "subtotal",
+    "Price",
+    "price",
+    "UnitPrice",
+    "unitPrice",
+  ]);
+}
+
+function firstNonEmptyRecordArray(source: RawRecord, candidates: string[]) {
+  let fallback: RawRecord[] = [];
+  for (const candidate of candidates) {
+    const records = firstArray(source, [candidate]).filter(isRecord);
+    if (records.length) return records;
+    if (!fallback.length) fallback = records;
+  }
+  return fallback;
+}
+
+function normalizeLineItems(raw: RawRecord): AppointmentLineItem[] {
+  const parts = firstNonEmptyRecordArray(raw, [
+    "AddOnParts",
+    "addOnParts",
+    "Parts",
+    "parts",
+    "LineItems",
+    "lineItems",
+    "Lines",
+    "lines",
+    "ProposalLines",
+    "proposalLines",
+    "InvoiceLines",
+    "invoiceLines",
+    "Items",
+    "items",
+  ]).filter(isRecord);
+
+  return parts.reduce<AppointmentLineItem[]>((items, part) => {
+    const name = stringField(part, [
+      "Name",
+      "name",
+      "Description",
+      "description",
+      "PartName",
+      "LineDescription",
+      "lineDescription",
+      "Title",
+      "title",
+      "ServiceName",
+      "serviceName",
+      "Part.Name",
+      "Part.Description",
+    ]);
+    if (!name) return items;
+
+    const parsedQuantity = numberField(part, ["Quantity", "quantity", "Qty", "qty"]);
+    const quantity = parsedQuantity !== null && parsedQuantity > 0 ? parsedQuantity : 1;
+    const unitPrice = numberField(part, ["UnitPrice", "unitPrice", "Price", "price", "BasePrice", "basePrice", "Part.UnitPrice"]);
+    const explicitTotal = numberField(part, [
+      "Total",
+      "total",
+      "Subtotal",
+      "subtotal",
+      "Amount",
+      "amount",
+      "LineTotal",
+      "lineTotal",
+      "ExtendedPrice",
+      "extendedPrice",
+      "ExtendedTotal",
+      "extendedTotal",
+    ]);
+
+    items.push({
+      name,
+      quantity,
+      sku: stringField(part, ["Sku", "SKU", "sku", "PartNumber", "partNumber", "PartId", "partId", "Part.Id"]),
+      notes: stringField(part, ["Notes", "notes"]),
+      unitPrice,
+      unitOfMeasure: stringField(part, ["UnitOfMeasure", "unitOfMeasure", "Part.UnitOfMeasure"]),
+      total: explicitTotal ?? (unitPrice === null ? null : quantity * unitPrice),
+    });
+
+    return items;
+  }, []);
+}
+
+function appointmentCostBreakdown(raw: RawRecord) {
+  const total = appointmentTotal(raw);
+  const baseServicePrice = servicePrice(raw);
+  const lineItems = normalizeLineItems(raw);
+  const partsTotal = lineItems.reduce((sum, item) => sum + (item.total ?? 0), 0);
+  const derivedServicePrice = total !== null && total >= partsTotal ? total - partsTotal : null;
+  const effectiveServicePrice = baseServicePrice ?? derivedServicePrice;
+  const calculatedJobTotal = effectiveServicePrice === null ? null : effectiveServicePrice + partsTotal;
+
+  return {
+    appointmentTotal: total,
+    servicePrice: effectiveServicePrice,
+    lineItems,
+    partsTotal,
+    jobTotal: total ?? calculatedJobTotal,
+  };
+}
+
+function proposalId(raw: RawRecord) {
+  return stringField(raw, ["ProposalId", "ProposalID", "Proposal.Id", "Proposal.ID", "RootProposalId", "RootProposalID"]);
+}
+
+function mergeAppointmentDetailWithProposal(appointment: RawRecord, proposal: RawRecord | null) {
+  if (!proposal) return appointment;
+  return {
+    ...proposal,
+    ...appointment,
+    ServiceName: stringField(appointment, ["ServiceName", "Service.Name", "Service"]) ?? stringField(proposal, ["ServiceName", "Service.Name", "Service"]),
+    ServiceId: stringField(appointment, ["ServiceId", "Service.Id"]) ?? stringField(proposal, ["ServiceId", "Service.Id"]),
+    Subtotal: numberField(proposal, ["Subtotal", "subtotal"]) ?? numberField(appointment, ["Subtotal", "subtotal"]),
+    ServicePrice: servicePrice(proposal) ?? servicePrice(appointment),
+    ProposalLines: firstArray(proposal, ["ProposalLines", "proposalLines"]),
+    ChangeOrders: firstArray(proposal, ["ChangeOrders", "changeOrders"]),
+  };
 }
 
 function contactLifetimeValue(raw: RawRecord) {
@@ -529,6 +728,34 @@ function contactVisitCount(raw: RawRecord) {
   ]);
 }
 
+function contactAppointmentCounts(raw: RawRecord) {
+  const structured = readField(raw, ["ContactAppointmentCounts", "contactAppointmentCounts"]);
+  const record = isRecord(structured) ? structured : {};
+  const completed = numberField(record, ["Completed", "completed"]) ?? numberField(raw, [
+    "ContactCompletedAppointmentCount",
+    "CompletedContactAppointments",
+    "Contact.CompletedAppointments",
+  ]);
+  const upcoming = numberField(record, ["Upcoming", "upcoming"]) ?? numberField(raw, [
+    "ContactUpcomingAppointmentCount",
+    "UpcomingContactAppointments",
+    "Contact.UpcomingAppointments",
+  ]);
+  const total = numberField(record, ["Total", "total"]) ?? contactVisitCount(raw) ?? (
+    completed !== null || upcoming !== null ? (completed ?? 0) + (upcoming ?? 0) : null
+  );
+
+  return {
+    total,
+    completed,
+    upcoming,
+  };
+}
+
+function hasStructuredContactAppointmentCounts(raw: RawRecord) {
+  return isRecord(readField(raw, ["ContactAppointmentCounts", "contactAppointmentCounts"]));
+}
+
 function appointmentUrl(raw: RawRecord) {
   const serviceMinderUrl = serviceMinderAppointmentUrl(raw);
   if (serviceMinderUrl) return serviceMinderUrl;
@@ -593,12 +820,13 @@ function organizationDirectory(input: unknown): OrganizationDirectory {
 }
 
 function hydrateAppointmentWithOrganization(raw: RawRecord, directory: OrganizationDirectory): RawRecord {
-  const currentName = organizationName(raw);
   const currentId = organizationId(raw);
+  const currentName = stringField(raw, ORGANIZATION_NAME_CANDIDATES);
   const organization = (currentId ? directory.byId.get(currentId) : null) ?? (!currentId && directory.single ? directory.single : null);
   if (!organization) return raw;
 
-  const nextName = currentName ?? organizationRecordName(organization);
+  const directoryName = organizationRecordName(organization);
+  const nextName = !currentName || generatedOrganizationLabel(currentName, currentId) ? directoryName : currentName;
   const nextId = currentId ?? organizationRecordId(organization);
   if ((!nextName || nextName === currentName) && (!nextId || nextId === currentId)) return raw;
 
@@ -647,53 +875,61 @@ async function mapWithConcurrency<T, R>(
 
 export function normalizeAppointment(input: unknown): ConservaAppointmentRow {
   const raw = isRecord(input) ? input : {};
+  const appointment = appointmentSourceRecord(raw);
   const extractedCustomFields = extractCustomFields(raw);
   const sesScore = sesScoreField(raw) ?? sesScoreFromCustomFields(extractedCustomFields);
   const customFields = sesScore ? [sesScore] : [];
   const scoreValues = sesScore?.scoreLike ? [sesScore] : [];
-  const completedDate = actualFinishDate(raw);
-  const scheduledDate = appointmentDate(raw);
-  const isCompleted = completedState(raw);
+  const completedDate = actualFinishDate(appointment);
+  const scheduledDate = appointmentDate(appointment);
+  const isCompleted = completedState(appointment);
+  const costBreakdown = appointmentCostBreakdown(appointment);
+  const counts = contactAppointmentCounts(appointment);
   const flags: string[] = [];
 
   if (!sesScore) flags.push("Missing SES score");
   if (!completedDate) flags.push("Missing completed date");
-  if (!contactName(raw)) flags.push("Missing contact");
+  if (!contactName(appointment)) flags.push("Missing contact");
 
   return {
-    id: appointmentId(raw),
-    appointmentUrl: appointmentUrl(raw),
+    id: appointmentId(appointment),
+    appointmentUrl: appointmentUrl(appointment),
     appointmentDate: scheduledDate,
     completedDate,
     isCompleted,
-    status: appointmentStatus(raw),
-    customerName: contactName(raw),
-    contactId: contactId(raw),
-    serviceName: stringField(raw, ["ServiceName", "Service.Name", "Service"]),
-    serviceId: stringField(raw, ["ServiceId", "Service.Id"]),
-    serviceAgentName: stringField(raw, [
+    status: appointmentStatus(appointment),
+    customerName: contactName(appointment),
+    contactId: contactId(appointment),
+    serviceName: stringField(appointment, ["ServiceName", "Service.Name", "Service"]),
+    serviceId: stringField(appointment, ["ServiceId", "Service.Id"]),
+    serviceAgentName: stringField(appointment, [
       "ServiceAgentName",
       "TechnicianName",
       "AgentName",
       "ServiceAgent.Name",
       "Technician.Name",
     ]),
-    serviceAgentId: stringField(raw, [
+    serviceAgentId: stringField(appointment, [
       "ServiceAgentId",
       "TechnicianId",
       "AgentId",
       "ServiceAgent.Id",
       "Technician.Id",
     ]),
-    organizationName: organizationName(raw),
-    organizationId: organizationId(raw),
-    locationName: stringField(raw, ["LocationName", "Location.Name", "LocationId"]),
-    appointmentTotal: appointmentTotal(raw),
-    contactLifetimeValue: contactLifetimeValue(raw),
-    appointmentNotes: appointmentNotes(raw),
-    firstAppointment: firstAppointment(raw),
-    contactVisitCount: contactVisitCount(raw),
-    weekNumber: numberField(raw, ["WeekNumber", "Week Number"]) ?? isoWeekNumber(completedDate ?? scheduledDate),
+    organizationName: organizationName(appointment),
+    organizationId: organizationId(appointment),
+    locationName: stringField(appointment, ["LocationName", "Location.Name", "LocationId"]),
+    appointmentTotal: costBreakdown.appointmentTotal,
+    servicePrice: costBreakdown.servicePrice,
+    lineItems: costBreakdown.lineItems,
+    partsTotal: costBreakdown.partsTotal,
+    jobTotal: costBreakdown.jobTotal,
+    contactLifetimeValue: contactLifetimeValue(appointment),
+    appointmentNotes: appointmentNotes(appointment),
+    firstAppointment: firstAppointment(appointment),
+    contactVisitCount: counts.total,
+    contactAppointmentCounts: counts,
+    weekNumber: numberField(appointment, ["WeekNumber", "Week Number"]) ?? isoWeekNumber(completedDate ?? scheduledDate),
     sesScore,
     hasSesScore: Boolean(sesScore),
     customFields,
@@ -748,12 +984,22 @@ function latestAppointmentDateKey(appointments: RawRecord[]) {
   return dateKey(latest);
 }
 
+function contactAppointmentHistoryThroughDate(appointments: RawRecord[]) {
+  const latestDate = latestAppointmentDateKey(appointments);
+  const lookaheadDays = positiveIntegerEnv("SERVICEMINDER_CONTACT_APPOINTMENT_LOOKAHEAD_DAYS", 730);
+  const horizonDate = new Date();
+  horizonDate.setDate(horizonDate.getDate() + lookaheadDays);
+  const horizonDateKey = horizonDate.toISOString().slice(0, 10);
+  if (!latestDate) return horizonDateKey;
+  return latestDate > horizonDateKey ? latestDate : horizonDateKey;
+}
+
 async function appointmentHistoryForContact(
   appointmentHistoryLocator: AppointmentHistoryLocator,
   contactIdValue: string,
   appointments: RawRecord[],
 ) {
-  const throughDate = latestAppointmentDateKey(appointments);
+  const throughDate = contactAppointmentHistoryThroughDate(appointments);
   if (!throughDate) return null;
 
   try {
@@ -796,6 +1042,16 @@ function uniqueContactAppointmentHistory(history: RawRecord[], currentContactId:
   }
 
   return unique;
+}
+
+function countContactAppointments(history: RawRecord[]) {
+  const completed = history.filter((appointment) => completedState(appointmentSourceRecord(appointment))).length;
+  const total = history.length;
+  return {
+    total,
+    completed,
+    upcoming: total - completed,
+  };
 }
 
 export async function hydrateAppointmentsWithFirstAppointmentStatus(
@@ -842,10 +1098,12 @@ export async function hydrateAppointmentsWithFirstAppointmentStatus(
       return candidateTime !== null && candidateTime < currentTime;
     });
 
+    const counts = countContactAppointments(history);
     return {
       ...appointment,
       FirstAppointment: !hasPriorAppointment,
-      ContactVisitCount: history.length,
+      ContactVisitCount: counts.total,
+      ContactAppointmentCounts: counts,
     };
   });
 }
@@ -857,6 +1115,8 @@ function rowMatchesFilters(row: ConservaAppointmentRow, filters: ConservaReportF
   if (filters.through && rowDate && rowDate > filters.through) return false;
   if (filters.serviceAgentId && row.serviceAgentId !== filters.serviceAgentId) return false;
   if (filters.serviceAgentName && row.serviceAgentName !== filters.serviceAgentName) return false;
+  const excludedServiceNames = filters.excludedServiceNames?.filter(Boolean) ?? [];
+  if (isExcludedServiceName(row.serviceName, excludedServiceNames)) return false;
   const serviceTypes = filters.serviceTypes?.filter(Boolean) ?? [];
   if (serviceTypes.length && (!row.serviceName || !serviceTypes.includes(row.serviceName))) return false;
   if (!serviceTypes.length && filters.serviceType && row.serviceName !== filters.serviceType) return false;
@@ -901,7 +1161,7 @@ function average(values: number[]) {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 }
 
-function summarizeRows(rows: ConservaAppointmentRow[]): ConservaReportSummary {
+function summarizeRows(rows: SummarizableAppointmentRow[]): ConservaReportSummary {
   const sesRows = rows.filter((row) => row.hasSesScore);
   const scoreValues = rows
     .map((row) => row.sesScore?.numericValue)
@@ -932,7 +1192,7 @@ function summarizeRows(rows: ConservaAppointmentRow[]): ConservaReportSummary {
   };
 }
 
-function scoreTrends(rows: ConservaAppointmentRow[]): ScoreTrendPoint[] {
+function scoreTrends(rows: SummarizableAppointmentRow[]): ScoreTrendPoint[] {
   const buckets = new Map<string, number[]>();
 
   for (const row of rows) {
@@ -954,6 +1214,22 @@ function scoreTrends(rows: ConservaAppointmentRow[]): ScoreTrendPoint[] {
       count: values.length,
     }))
     .sort((left, right) => left.period.localeCompare(right.period));
+}
+
+export function applyExcludedServicesToReport<Row extends SummarizableAppointmentRow>(
+  result: ReportWithSummarizableRows<Row>,
+  excludedServiceNames: string[],
+): ReportWithSummarizableRows<Row> {
+  const rows = result.rows.filter((row) => !isExcludedServiceName(row.serviceName, excludedServiceNames));
+  if (rows.length === result.rows.length) return result;
+  const allFields = rows.flatMap((row) => row.customFields);
+  return {
+    ...result,
+    rows,
+    summary: summarizeRows(rows),
+    fieldSummaries: summarizeFieldValues(rows.length, allFields),
+    scoreTrends: scoreTrends(rows),
+  };
 }
 
 export function buildConservaReport(
@@ -1010,6 +1286,15 @@ async function recordReportRun(userId: string, result: ConservaReportResult, fil
   }
 }
 
+function filtersWithExcludedServices(
+  filters: ConservaReportFilters,
+  settings: Awaited<ReturnType<typeof getSettings>>,
+): ConservaReportFilters {
+  const excludedServiceNames = parseExcludedServiceNames(settings.excludedServiceNames);
+  if (!excludedServiceNames.length) return filters;
+  return { ...filters, excludedServiceNames };
+}
+
 export async function getConservaReport(
   userId: string,
   filters: ConservaReportFilters,
@@ -1017,11 +1302,12 @@ export async function getConservaReport(
 ): Promise<ConservaReportResult> {
   try {
     const [settings, apiKey] = await Promise.all([getSettings(userId), getDecryptedApiKey(userId)]);
+    const effectiveFilters = filtersWithExcludedServices(filters, settings);
     if (!apiKey) {
       const mockRecords = firstArray(mockAppointmentPayload, ["Appointments"]).filter(isRecord);
       return buildConservaReport(
         mockRecords,
-        filters,
+        effectiveFilters,
         "mock",
         [mockAppointmentPayload],
         "No ServiceMinder API key is configured. Showing representative mock data.",
@@ -1043,15 +1329,18 @@ export async function getConservaReport(
       const cachedAppointments = await readCachedCompletedAppointments(cacheContext, filters, { includeContact });
       if (cachedAppointments) {
         const contactHydratedItems = await hydrateAppointmentsWithContacts(cachedAppointments, client);
-        const result = buildConservaReport(contactHydratedItems, filters, "cache");
+        const appointmentCountHydratedItems = contactHydratedItems.every(hasStructuredContactAppointmentCounts)
+          ? contactHydratedItems
+          : await hydrateAppointmentsWithFirstAppointmentStatus(contactHydratedItems, client);
+        const result = buildConservaReport(appointmentCountHydratedItems, effectiveFilters, "cache");
         await writeCachedCompletedAppointments(
           cacheContext,
           filters,
           { includeContact },
-          cacheRecordsFromAppointments(contactHydratedItems),
+          cacheRecordsFromAppointments(appointmentCountHydratedItems),
           null,
         );
-        await recordReportRun(userId, result, filters);
+        await recordReportRun(userId, result, effectiveFilters);
         return result;
       }
     }
@@ -1068,7 +1357,7 @@ export async function getConservaReport(
     const organizationHydratedItems = hydrateAppointmentsWithOrganizations(payloads.items, organizationsResponse);
     const contactHydratedItems = await hydrateAppointmentsWithContacts(organizationHydratedItems, client);
     const firstAppointmentHydratedItems = await hydrateAppointmentsWithFirstAppointmentStatus(contactHydratedItems, client);
-    const result = buildConservaReport(firstAppointmentHydratedItems, filters, "live", payloads.rawResponses, payloads.warning);
+    const result = buildConservaReport(firstAppointmentHydratedItems, effectiveFilters, "live", payloads.rawResponses, payloads.warning);
     await writeCachedCompletedAppointments(
       cacheContext,
       filters,
@@ -1076,7 +1365,7 @@ export async function getConservaReport(
       cacheRecordsFromAppointments(firstAppointmentHydratedItems),
       payloads.warning,
     );
-    await recordReportRun(userId, result, filters);
+    await recordReportRun(userId, result, effectiveFilters);
     return result;
   } catch (error) {
     const mockRecords = firstArray(mockAppointmentPayload, ["Appointments"]).filter(isRecord);
@@ -1089,6 +1378,26 @@ export async function getConservaReport(
       `${message} Showing representative mock data.`,
     );
   }
+}
+
+export async function getConservaAppointmentDetail(userId: string, targetAppointmentId: string) {
+  const [settings, apiKey] = await Promise.all([getSettings(userId), getDecryptedApiKey(userId)]);
+  if (!apiKey) {
+    const mockRecords = firstArray(mockAppointmentPayload, ["Appointments"]).filter(isRecord);
+    const mock = mockRecords.find((record) => appointmentId(record) === targetAppointmentId) ?? null;
+    return mock ? normalizeAppointment(mock) : null;
+  }
+
+  const client = new ServiceMinderClient({
+    baseUrl: settings.apiBaseUrl,
+    apiKey,
+  });
+  const appointmentResponse = await client.appointmentDetails(targetAppointmentId);
+  const appointment = appointmentSourceRecord(appointmentResponse);
+  const relatedProposalId = proposalId(appointment);
+  const proposalResponse = relatedProposalId ? await client.proposalDetails(relatedProposalId).catch(() => null) : null;
+  const merged = mergeAppointmentDetailWithProposal(appointment, proposalResponse);
+  return normalizeAppointment(merged);
 }
 
 export function lookupOptions(rows: ConservaAppointmentRow[]) {
@@ -1136,14 +1445,6 @@ export function lookupOptionsFromServiceMinderResponses({
     "Items",
     "Results",
   ]).filter(isRecord);
-  const serviceRecords = firstArray(servicesResponse, [
-    "Services",
-    "services",
-    "ServiceTypes",
-    "serviceTypes",
-    "Items",
-    "Results",
-  ]).filter(isRecord);
   const organizationRecords = firstArray(organizationsResponse, [
     "Organizations",
     "organizations",
@@ -1163,7 +1464,7 @@ export function lookupOptionsFromServiceMinderResponses({
     serviceAgents: Array.from(agents.entries())
       .map(([id, name]) => ({ id, name }))
       .sort((left, right) => left.name.localeCompare(right.name)),
-    services: uniqueNamedOptions(serviceRecords.map(serviceRecordName)),
+    services: serviceCatalogFromResponse(servicesResponse).map((service) => ({ name: service.name })),
     organizations: uniqueNamedOptions(organizationRecords.map(organizationRecordName)),
   };
 }

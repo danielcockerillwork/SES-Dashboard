@@ -2,7 +2,13 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getPrisma, isDatabaseConfigured } from "@/lib/db";
 import { requireCurrentUserId, unauthorizedResponse } from "@/lib/auth";
-import { DEFAULT_BASE_URL, fallbackPublicSettings, getSettings, publicSettings } from "@/lib/settings";
+import {
+  DEFAULT_BASE_URL,
+  fallbackPublicSettings,
+  getSettings,
+  parseExcludedServiceNames,
+  publicSettings,
+} from "@/lib/settings";
 import { apiKeyHint, decryptSecret, encryptSecret } from "@/lib/security";
 import { ServiceMinderClient } from "@/lib/serviceminder/client";
 import { resolveCurrentServiceMinderOrganization } from "@/lib/serviceminder/identity";
@@ -13,6 +19,7 @@ const settingsSchema = z.object({
   apiBaseUrl: z.string().url().default(DEFAULT_BASE_URL),
   apiKey: z.string().optional().or(z.literal("")),
   includeContactDefault: z.boolean().default(true),
+  excludedServiceNames: z.array(z.string()).default([]),
 });
 
 function isFormRequest(request: Request) {
@@ -28,10 +35,15 @@ async function readSettingsInput(request: Request) {
   if (isFormRequest(request)) {
     const formData = await request.formData();
     const includeContactDefault = formValue(formData.get("includeContactDefault"));
+    const excludedServiceNames = formData
+      .getAll("excludedServiceNames")
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .filter(Boolean);
     return {
       apiBaseUrl: formValue(formData.get("apiBaseUrl")) ?? DEFAULT_BASE_URL,
       apiKey: formValue(formData.get("apiKey")) ?? "",
       includeContactDefault: includeContactDefault === undefined ? true : includeContactDefault === "true",
+      excludedServiceNames,
     };
   }
 
@@ -99,6 +111,7 @@ export async function POST(request: Request) {
     const data = {
       apiBaseUrl: input.apiBaseUrl.replace(/\/$/, ""),
       includeContactDefault: input.includeContactDefault,
+      excludedServiceNames: parseExcludedServiceNames(input.excludedServiceNames),
       ...(apiKey
         ? {
             encryptedApiKey: encryptSecret(apiKey),

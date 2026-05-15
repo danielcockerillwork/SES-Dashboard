@@ -8,9 +8,9 @@ type BadgeProps = React.HTMLAttributes<HTMLSpanElement> & {
 const variants = {
   default: "border-transparent bg-primary text-primary-foreground",
   secondary: "border-transparent bg-secondary text-secondary-foreground",
-  outline: "text-foreground",
+  outline: "border-primary/25 text-foreground",
   warning: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200",
-  good: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-200",
+  good: "border-secondary/40 bg-accent text-accent-foreground dark:border-secondary/50 dark:bg-secondary/15 dark:text-accent-foreground",
 };
 
 export function Badge({ className, variant = "default", ...props }: BadgeProps) {

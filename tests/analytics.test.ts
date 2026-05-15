@@ -51,24 +51,26 @@ function row({
 describe("SES value analytics", () => {
   it("builds SES bands and excludes incomplete numeric rows from analysis", () => {
     const analytics = buildSesValueAnalytics([
-      row({ id: "1", score: 65, value: 100 }),
-      row({ id: "2", score: 75, value: 200 }),
-      row({ id: "3", score: 85, value: 300 }),
-      row({ id: "4", score: 95, value: 400 }),
-      row({ id: "5", score: null, value: 500 }),
-      row({ id: "6", score: 90, value: null }),
+      row({ id: "1", score: 45, value: 100 }),
+      row({ id: "2", score: 65, value: 200 }),
+      row({ id: "3", score: 75, value: 300 }),
+      row({ id: "4", score: 85, value: 400 }),
+      row({ id: "5", score: 95, value: 500 }),
+      row({ id: "6", score: null, value: 600 }),
+      row({ id: "7", score: 90, value: null }),
     ]);
 
-    expect(analytics.analyzableRows).toBe(4);
-    expect(analytics.highTicketThreshold).toBe(300);
+    expect(analytics.analyzableRows).toBe(5);
+    expect(analytics.highTicketThreshold).toBe(400);
     expect(analytics.bands.map((band) => [band.label, band.count])).toEqual([
-      ["<70", 1],
+      ["<50", 1],
+      ["50-69", 1],
       ["70-79", 1],
       ["80-89", 1],
       ["90+", 1],
     ]);
-    expect(analytics.bands.find((band) => band.label === "<70")?.percentOfAnalyzable).toBe(25);
-    expect(analytics.averageValue).toBe(250);
+    expect(analytics.bands.find((band) => band.label === "<50")?.percentOfAnalyzable).toBe(20);
+    expect(analytics.averageValue).toBe(300);
   });
 
   it("keeps zero-dollar tickets analyzable but excludes them from the high-ticket threshold", () => {
@@ -86,8 +88,8 @@ describe("SES value analytics", () => {
 
   it("identifies low-score high-ticket outliers sorted by value then lower score", () => {
     const analytics = buildSesValueAnalytics([
-      row({ id: "high-low-1", score: 79, value: 500 }),
-      row({ id: "high-low-2", score: 65, value: 500 }),
+      row({ id: "high-low-1", score: 49, value: 500 }),
+      row({ id: "high-low-2", score: 40, value: 500 }),
       row({ id: "high-ok", score: 90, value: 600 }),
       row({ id: "low-ticket", score: 60, value: 100 }),
       row({ id: "mid-ticket", score: 85, value: 300 }),
@@ -137,7 +139,7 @@ describe("SES value analytics", () => {
       }),
       row({
         id: "3",
-        score: 60,
+        score: 40,
         value: 600,
         serviceName: "Repair",
         serviceAgentName: "Mina Patel",
@@ -151,7 +153,7 @@ describe("SES value analytics", () => {
       label: "Repair",
       count: 2,
       outlierCount: 1,
-      lowScoreCount: 2,
+      lowScoreCount: 1,
       totalValue: 1100,
     });
     expect(analytics.segments.serviceAgent[0].label).toBe("Mina Patel");

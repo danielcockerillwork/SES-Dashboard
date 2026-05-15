@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { apiKeyHint, decryptSecret, encryptSecret } from "@/lib/security";
-import { publicSettings } from "@/lib/settings";
+import { parseExcludedServiceNames, publicSettings } from "@/lib/settings";
 
 describe("settings security", () => {
+  it("normalizes excluded service names", () => {
+    expect(parseExcludedServiceNames([" Repair Visit ", "Repair Visit", "", 4, null])).toEqual(["Repair Visit"]);
+  });
+
   it("encrypts and decrypts API keys without exposing the raw key in public settings", () => {
     process.env.APP_ENCRYPTION_KEY = "test-encryption-key-that-is-long-enough";
     const encrypted = encryptSecret("sm_live_123456789");
@@ -18,6 +22,7 @@ describe("settings security", () => {
       encryptedApiKey: encrypted,
       apiKeyHint: "sm_l…6789",
       includeContactDefault: true,
+      excludedServiceNames: ["New System Quote", "Drainage Quote"],
       connectionStatus: "connected",
       lastSuccessfulSync: new Date("2026-05-14T12:00:00.000Z"),
       lastError: null,
@@ -26,6 +31,7 @@ describe("settings security", () => {
     });
 
     expect(settings.apiKeyConfigured).toBe(true);
+    expect(settings.excludedServiceNames).toEqual(["New System Quote", "Drainage Quote"]);
     expect(settings).not.toHaveProperty("encryptedApiKey");
     expect(JSON.stringify(settings)).not.toContain("sm_live_123456789");
   });

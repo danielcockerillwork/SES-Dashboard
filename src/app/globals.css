@@ -2,48 +2,48 @@
 
 :root {
   color-scheme: light;
-  --background: 210 20% 98%;
-  --foreground: 222 47% 11%;
+  --background: 0 0% 99%;
+  --foreground: 203 72% 18%;
   --card: 0 0% 100%;
-  --card-foreground: 222 47% 11%;
-  --primary: 215 33% 19%;
+  --card-foreground: 203 72% 18%;
+  --primary: 204 100% 39%;
   --primary-foreground: 0 0% 100%;
-  --secondary: 162 52% 94%;
-  --secondary-foreground: 168 78% 16%;
-  --muted: 210 20% 94%;
-  --muted-foreground: 215 16% 42%;
-  --accent: 205 84% 94%;
-  --accent-foreground: 204 80% 22%;
+  --secondary: 87 71% 44%;
+  --secondary-foreground: 203 72% 18%;
+  --muted: 200 12% 94%;
+  --muted-foreground: 200 1% 39%;
+  --accent: 87 66% 94%;
+  --accent-foreground: 203 72% 22%;
   --destructive: 0 72% 51%;
   --destructive-foreground: 0 0% 100%;
-  --border: 214 18% 86%;
-  --input: 214 18% 86%;
-  --ring: 204 88% 53%;
+  --border: 200 9% 83%;
+  --input: 200 9% 83%;
+  --ring: 204 100% 39%;
   --radius: 0.5rem;
 }
 
 .dark {
   color-scheme: dark;
-  --background: 222 24% 8%;
-  --foreground: 210 24% 96%;
-  --card: 222 21% 11%;
-  --card-foreground: 210 24% 96%;
-  --primary: 172 62% 44%;
-  --primary-foreground: 180 100% 8%;
-  --secondary: 218 17% 18%;
-  --secondary-foreground: 195 45% 92%;
-  --muted: 218 16% 18%;
-  --muted-foreground: 215 14% 68%;
-  --accent: 196 56% 18%;
-  --accent-foreground: 195 90% 88%;
+  --background: 203 72% 10%;
+  --foreground: 0 0% 97%;
+  --card: 203 60% 14%;
+  --card-foreground: 0 0% 97%;
+  --primary: 204 100% 55%;
+  --primary-foreground: 203 72% 10%;
+  --secondary: 87 63% 52%;
+  --secondary-foreground: 203 72% 10%;
+  --muted: 203 32% 20%;
+  --muted-foreground: 200 10% 76%;
+  --accent: 203 48% 22%;
+  --accent-foreground: 87 63% 82%;
   --destructive: 0 67% 55%;
   --destructive-foreground: 0 0% 100%;
-  --border: 217 16% 24%;
-  --input: 217 16% 24%;
-  --ring: 174 67% 48%;
+  --border: 203 32% 28%;
+  --input: 203 32% 28%;
+  --ring: 204 100% 55%;
 }
 
-@theme inline {
+@theme {
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
   --color-card: hsl(var(--card));
@@ -61,8 +61,12 @@
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
-  --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+  --color-conserva-blue: #0077c8;
+  --color-conserva-green: #78be20;
+  --color-conserva-gray: #8b8d8e;
+  --color-conserva-navy: #114667;
+  --font-sans: Futura, "Futura PT", "Myriad Pro", Tahoma, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace, monospace;
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
@@ -74,15 +78,15 @@
 
 body {
   background:
-    linear-gradient(180deg, rgba(232, 242, 248, 0.55) 0, rgba(248, 250, 252, 0) 360px),
+    linear-gradient(180deg, rgba(0, 119, 200, 0.06) 0, rgba(120, 190, 32, 0.045) 260px, rgba(255, 255, 255, 0) 460px),
     hsl(var(--background));
   color: hsl(var(--foreground));
+  font-family: var(--font-sans);
 }
 
 .dark body {
   background:
-    radial-gradient(circle at top left, rgba(20, 184, 166, 0.12), transparent 420px),
-    linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0, rgba(15, 23, 42, 0) 360px),
+    linear-gradient(180deg, rgba(0, 119, 200, 0.16) 0, rgba(17, 70, 103, 0) 420px),
     hsl(var(--background));
 }
 
@@ -91,6 +95,17 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-mono);
+}
+
+::selection {
+  background: hsl(var(--secondary) / 0.35);
 }
 
 .table-scrollbar {

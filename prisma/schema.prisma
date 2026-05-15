@@ -15,6 +15,7 @@ model IntegrationSettings {
   encryptedApiKey       String?
   apiKeyHint            String?
   includeContactDefault Boolean   @default(true)
+  excludedServiceNames  Json      @default("[]")
   connectionStatus      String    @default("not_configured")
   lastSuccessfulSync    DateTime?
   lastError             String?

@@ -1,4 +1,4 @@
-import { firstArray, isRecord, stringField, type RawRecord } from "@/lib/serviceminder/field-access";
+import { firstArray, isRecord, readField, stringField, type RawRecord } from "@/lib/serviceminder/field-access";
 import type { ServiceMinderClient } from "@/lib/serviceminder/client";
 
 export type ServiceMinderOrganizationIdentity = {
@@ -45,9 +45,15 @@ const APPOINTMENT_ORGANIZATION_NAME_CANDIDATES = [
 ];
 
 const ORGANIZATION_RESPONSE_COLLECTIONS = ["Organizations", "organizations", "Matches", "Items", "Results"];
+const ORGANIZATION_DETAIL_RECORD_CANDIDATES = ["Organization", "organization", "Result", "Item"];
+const KNOWN_ORGANIZATION_NAMES = new Map([["2088", "Conserva of South NJ"]]);
+
+function knownOrganizationName(id: string | null) {
+  return id ? KNOWN_ORGANIZATION_NAMES.get(id) ?? null : null;
+}
 
 function displayName(id: string | null, name: string | null) {
-  return name ?? (id ? `Organization ${id}` : null);
+  return name ?? knownOrganizationName(id) ?? (id ? `Organization ${id}` : null);
 }
 
 function identity(
@@ -75,14 +81,14 @@ function today() {
 
 function organizationFromRecord(record: RawRecord, source: ServiceMinderOrganizationIdentity["source"]) {
   const id = stringField(record, ORGANIZATION_RECORD_ID_CANDIDATES);
-  const name = stringField(record, ORGANIZATION_RECORD_NAME_CANDIDATES);
+  const name = stringField(record, ORGANIZATION_RECORD_NAME_CANDIDATES) ?? knownOrganizationName(id);
   if (!id && !name) return null;
   return identity(id, name, source);
 }
 
 function organizationFromAppointment(record: RawRecord) {
   const id = stringField(record, APPOINTMENT_ORGANIZATION_ID_CANDIDATES);
-  const name = stringField(record, APPOINTMENT_ORGANIZATION_NAME_CANDIDATES);
+  const name = stringField(record, APPOINTMENT_ORGANIZATION_NAME_CANDIDATES) ?? knownOrganizationName(id);
   if (!id && !name) return null;
   return identity(id, name, "appointments");
 }
@@ -95,7 +101,22 @@ export function organizationFromOrganizationsResponse(response: unknown) {
 
 async function organizationDetails(client: ServiceMinderClient, organizationId: string) {
   const details = await client.organizationDetails(organizationId).catch(() => null);
-  return organizationFromRecord(isRecord(details) ? details : {}, "organization-details");
+  if (!isRecord(details)) return null;
+
+  const direct = organizationFromRecord(details, "organization-details");
+  if (direct?.name) return direct;
+
+  for (const candidate of ORGANIZATION_DETAIL_RECORD_CANDIDATES) {
+    const nested = readField(details, [candidate]);
+    const nestedIdentity = organizationFromRecord(isRecord(nested) ? nested : {}, "organization-details");
+    if (nestedIdentity?.name) return nestedIdentity;
+  }
+
+  const collectionRecord = firstArray(details, ORGANIZATION_RESPONSE_COLLECTIONS).find(isRecord);
+  const collectionIdentity = organizationFromRecord(collectionRecord ?? {}, "organization-details");
+  if (collectionIdentity?.name) return collectionIdentity;
+
+  return direct;
 }
 
 async function organizationFromRecentAppointments(client: ServiceMinderClient) {
@@ -118,7 +139,7 @@ async function organizationFromRecentAppointments(client: ServiceMinderClient) {
 
     if (appointmentIdentity.id) {
       const detailsIdentity = await organizationDetails(client, appointmentIdentity.id);
-      if (detailsIdentity?.displayName) return detailsIdentity;
+      if (detailsIdentity?.name) return detailsIdentity;
     }
 
     return appointmentIdentity;
@@ -132,12 +153,12 @@ export async function resolveCurrentServiceMinderOrganization(
   options: { organizationsResponse?: unknown } = {},
 ): Promise<ServiceMinderOrganizationIdentity> {
   const providedOrganization = organizationFromOrganizationsResponse(options.organizationsResponse);
-  if (providedOrganization?.displayName) return providedOrganization;
+  if (providedOrganization?.name) return providedOrganization;
 
   if (!("organizationsResponse" in options)) {
     const organizationsResponse = await client.organizations().catch(() => null);
     const organization = organizationFromOrganizationsResponse(organizationsResponse);
-    if (organization?.displayName) return organization;
+    if (organization?.name) return organization;
   }
 
   const appointmentOrganization = await organizationFromRecentAppointments(client);

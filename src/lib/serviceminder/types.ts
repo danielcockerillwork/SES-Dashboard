@@ -43,6 +43,22 @@ export type CustomFieldValue = {
   rawKey: string | null;
 };
 
+export type AppointmentLineItem = {
+  name: string;
+  quantity: number;
+  sku: string | null;
+  notes: string | null;
+  unitPrice: number | null;
+  unitOfMeasure: string | null;
+  total: number | null;
+};
+
+export type ContactAppointmentCounts = {
+  total: number | null;
+  completed: number | null;
+  upcoming: number | null;
+};
+
 export type ConservaAppointmentRow = {
   id: string | null;
   appointmentUrl: string | null;
@@ -60,10 +76,15 @@ export type ConservaAppointmentRow = {
   organizationId: string | null;
   locationName: string | null;
   appointmentTotal: number | null;
+  servicePrice: number | null;
+  lineItems: AppointmentLineItem[];
+  partsTotal: number;
+  jobTotal: number | null;
   contactLifetimeValue: number | null;
   appointmentNotes: string | null;
   firstAppointment: boolean | null;
   contactVisitCount: number | null;
+  contactAppointmentCounts: ContactAppointmentCounts;
   weekNumber: number | null;
   sesScore: CustomFieldValue | null;
   hasSesScore: boolean;
@@ -125,6 +146,7 @@ export type ConservaReportFilters = {
   serviceAgentName?: string | null;
   serviceType?: string | null;
   serviceTypes?: string[];
+  excludedServiceNames?: string[];
   organization?: string | null;
   customField?: string | null;
   missingSelectedField?: boolean;

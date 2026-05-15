@@ -1,4 +1,5 @@
 import { SignIn } from "@clerk/nextjs";
+import Image from "next/image";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function SignInPage() {
@@ -9,6 +10,13 @@ export default function SignInPage() {
       <main className="mx-auto flex min-h-[70vh] max-w-md items-center px-4">
         <Card>
           <CardHeader>
+            <Image
+              src="/brand/ses-mark.png"
+              alt="SES Sprinkler System Evaluation Score"
+              width={156}
+              height={158}
+              className="mb-2 h-12 w-auto rounded-full"
+            />
             <CardTitle>{localAuthEnabled ? "Local Auth Mode" : "Authentication Not Configured"}</CardTitle>
             <CardDescription>
               {localAuthEnabled
