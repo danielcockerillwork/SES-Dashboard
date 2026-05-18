@@ -3,6 +3,8 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { requireCurrentUserId, unauthorizedResponse } from "@/lib/auth";
 import { getPrisma, isDatabaseConfigured } from "@/lib/db";
+import { createLocalSavedView, deleteLocalSavedView, listLocalSavedViews } from "@/lib/local-store";
+import { isDesktopMode } from "@/lib/runtime";
 
 export const runtime = "nodejs";
 
@@ -21,6 +23,7 @@ function databaseRequiredResponse() {
 export async function GET() {
   const userId = await requireCurrentUserId();
   if (!userId) return unauthorizedResponse();
+  if (isDesktopMode()) return NextResponse.json(await listLocalSavedViews(userId, "conserva-ses-score"));
   if (!isDatabaseConfigured()) return databaseRequiredResponse();
 
   const views = await getPrisma().savedReportView.findMany({
@@ -34,6 +37,17 @@ export async function GET() {
 export async function POST(request: Request) {
   const userId = await requireCurrentUserId();
   if (!userId) return unauthorizedResponse();
+  if (isDesktopMode()) {
+    const input = savedViewSchema.parse(await request.json());
+    const view = await createLocalSavedView({
+      userId,
+      reportType: "conserva-ses-score",
+      name: input.name,
+      filters: input.filters,
+      columns: input.columns,
+    });
+    return NextResponse.json(view);
+  }
   if (!isDatabaseConfigured()) return databaseRequiredResponse();
 
   const input = savedViewSchema.parse(await request.json());
@@ -53,10 +67,14 @@ export async function POST(request: Request) {
 export async function DELETE(request: Request) {
   const userId = await requireCurrentUserId();
   if (!userId) return unauthorizedResponse();
-  if (!isDatabaseConfigured()) return databaseRequiredResponse();
 
   const id = new URL(request.url).searchParams.get("id");
   if (!id) return NextResponse.json({ error: "Saved view id is required." }, { status: 400 });
+  if (isDesktopMode()) {
+    await deleteLocalSavedView(userId, id);
+    return NextResponse.json({ ok: true });
+  }
+  if (!isDatabaseConfigured()) return databaseRequiredResponse();
 
   await getPrisma().savedReportView.deleteMany({
     where: { id, userId },

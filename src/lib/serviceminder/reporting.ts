@@ -1,5 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { getPrisma, isDatabaseConfigured } from "@/lib/db";
+import { appendLocalReportRun } from "@/lib/local-store";
+import { isDesktopMode } from "@/lib/runtime";
 import { getDecryptedApiKey, getSettings, parseExcludedServiceNames } from "@/lib/settings";
 import { redactSecrets } from "@/lib/security";
 import {
@@ -25,6 +27,7 @@ import {
 import { mockAppointmentPayload } from "@/lib/serviceminder/fixtures";
 import type {
   AppointmentLineItem,
+  ContactAppointmentHistoryItem,
   ConservaAppointmentRow,
   ConservaReportFilters,
   ConservaReportResult,
@@ -252,6 +255,7 @@ function completedState(raw: RawRecord) {
 function appointmentStatus(raw: RawRecord) {
   const numericStatus = numberField(raw, ["Status", "AppointmentStatus"]);
   if (numericStatus === 3) return "Completed";
+  if (numericStatus === 0) return "Queued";
 
   const status = stringField(raw, ["Status", "AppointmentStatus", "State"]);
   if (!status) return null;
@@ -632,14 +636,20 @@ function isContactLifetimeValuePath(parts: string[]) {
   const identifier = normalizedIdentifier(parts[parts.length - 1]);
   const fullPath = normalizedIdentifier(pathText(parts));
   const scopedToContact = parts.some((part) => ["contact", "customer", "client"].includes(normalizedIdentifier(part)));
+  const fullPathHasLifetimeValue = fullPath.includes("lifetimevalue");
+  const fullPathHasLifetimeTotal = fullPath.includes("lifetimetotal") || fullPath.includes("lifetimesales") || fullPath.includes("lifetimerevenue");
+  const fullPathHasLtv = fullPath.includes("ltv");
 
   if (CONTACT_LIFETIME_VALUE_IDENTIFIERS.has(identifier) || CONTACT_LIFETIME_VALUE_IDENTIFIERS.has(fullPath)) return true;
   if (identifier.includes("lifetime") && identifier.includes("value")) return true;
   if (identifier === "ltv" || identifier.endsWith("ltv")) return true;
+  if (fullPathHasLifetimeValue || fullPathHasLtv) return true;
 
   if (!scopedToContact) return false;
+  if (fullPathHasLifetimeTotal) return true;
   if (identifier.includes("lifetime") && (identifier.includes("total") || identifier.includes("sales") || identifier.includes("revenue"))) return true;
   if (identifier.includes("total") && (identifier.includes("revenue") || identifier.includes("sales") || identifier.includes("sold"))) return true;
+  if (fullPath.includes("totalrevenue") || fullPath.includes("totalsales") || fullPath.includes("totalsold")) return true;
 
   return false;
 }
@@ -765,6 +775,11 @@ function contactAppointmentCounts(raw: RawRecord) {
 
 function hasStructuredContactAppointmentCounts(raw: RawRecord) {
   return isRecord(readField(raw, ["ContactAppointmentCounts", "contactAppointmentCounts"]));
+}
+
+function hasStructuredContactAppointmentHistory(raw: RawRecord) {
+  const value = readField(raw, ["ContactAppointmentHistory", "contactAppointmentHistory"]);
+  return Array.isArray(value);
 }
 
 function appointmentUrl(raw: RawRecord) {
@@ -940,6 +955,7 @@ export function normalizeAppointment(input: unknown): ConservaAppointmentRow {
     firstAppointment: firstAppointment(appointment),
     contactVisitCount: counts.total,
     contactAppointmentCounts: counts,
+    contactAppointmentHistory: historyItems(appointment),
     weekNumber: numberField(appointment, ["WeekNumber", "Week Number"]) ?? isoWeekNumber(completedDate ?? scheduledDate),
     sesScore,
     hasSesScore: Boolean(sesScore),
@@ -1065,6 +1081,31 @@ function countContactAppointments(history: RawRecord[]) {
   };
 }
 
+function compareAppointmentHistoryAscending(left: RawRecord, right: RawRecord) {
+  const leftTime = appointmentTime(left);
+  const rightTime = appointmentTime(right);
+
+  if (leftTime === null && rightTime === null) return 0;
+  if (leftTime === null) return 1;
+  if (rightTime === null) return -1;
+  return leftTime - rightTime;
+}
+
+function historyItems(raw: RawRecord): ContactAppointmentHistoryItem[] | null {
+  const items = firstArray(raw, ["ContactAppointmentHistory", "contactAppointmentHistory"]).filter(isRecord);
+  if (!items.length) return null;
+
+  return items.map((item) => ({
+    appointmentId: stringField(item, ["AppointmentId", "appointmentId"]),
+    appointmentDateTime: stringField(item, ["DateTime", "appointmentDateTime"]),
+    completedDateTime: stringField(item, ["ActualFinish", "completedDateTime"]),
+    serviceName: stringField(item, ["ServiceName", "serviceName", "Service.Name", "Service"]),
+    status: stringField(item, ["Status", "status"]),
+    isCompleted: booleanField(item, ["IsCompleted", "isCompleted"]) ?? false,
+    isCurrent: booleanField(item, ["IsCurrent", "isCurrent"]) ?? false,
+  }));
+}
+
 export async function hydrateAppointmentsWithFirstAppointmentStatus(
   appointmentRecords: RawRecord[],
   appointmentHistoryLocator: AppointmentHistoryLocator,
@@ -1110,11 +1151,33 @@ export async function hydrateAppointmentsWithFirstAppointmentStatus(
     });
 
     const counts = countContactAppointments(history);
+    const appointmentKey = appointmentHistoryKey(appointment);
+    const historyList = [...history]
+      .sort(compareAppointmentHistoryAscending)
+      .map((candidate) => {
+        const candidateAppointment = appointmentSourceRecord(candidate);
+        const candidateAppointmentId = appointmentId(candidateAppointment);
+
+        return {
+          AppointmentId: candidateAppointmentId,
+          DateTime: appointmentDate(candidateAppointment),
+          ActualFinish: actualFinishDate(candidateAppointment),
+          ServiceName: stringField(candidateAppointment, ["ServiceName", "Service.Name", "Service"]),
+          Status: appointmentStatus(candidateAppointment),
+          IsCompleted: completedState(candidateAppointment),
+          IsCurrent:
+            currentAppointmentId && candidateAppointmentId
+              ? currentAppointmentId === candidateAppointmentId
+              : appointmentHistoryKey(candidateAppointment) === appointmentKey,
+        };
+      });
+
     return {
       ...appointment,
       FirstAppointment: !hasPriorAppointment,
       ContactVisitCount: counts.total,
       ContactAppointmentCounts: counts,
+      ContactAppointmentHistory: historyList,
     };
   });
 }
@@ -1280,6 +1343,22 @@ function cacheRecordsFromAppointments(appointmentRecords: RawRecord[]): Appointm
 }
 
 async function recordReportRun(userId: string, result: ConservaReportResult, filters: ConservaReportFilters) {
+  if (isDesktopMode()) {
+    try {
+      await appendLocalReportRun({
+        userId,
+        reportType: "conserva-ses-score",
+        filters: filters as Record<string, unknown>,
+        source: result.source,
+        rowCount: result.rows.length,
+        rawPayload: redactSecrets(result.rawPayloads),
+      });
+    } catch {
+      // Report run persistence should not block the dashboard.
+    }
+    return;
+  }
+
   if (!isDatabaseConfigured()) return;
   try {
     await getPrisma().reportRun.create({
@@ -1344,7 +1423,9 @@ export async function getConservaReport(
       const cachedAppointments = await readCachedCompletedAppointments(cacheContext, filters, { includeContact });
       if (cachedAppointments) {
         const contactHydratedItems = await hydrateAppointmentsWithContacts(cachedAppointments, client);
-        const appointmentCountHydratedItems = contactHydratedItems.every(hasStructuredContactAppointmentCounts)
+        const appointmentCountHydratedItems =
+          contactHydratedItems.every(hasStructuredContactAppointmentCounts) &&
+          contactHydratedItems.every(hasStructuredContactAppointmentHistory)
           ? contactHydratedItems
           : await hydrateAppointmentsWithFirstAppointmentStatus(contactHydratedItems, client);
         const result = buildConservaReport(appointmentCountHydratedItems, effectiveFilters, "cache");

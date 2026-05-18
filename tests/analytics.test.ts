@@ -5,6 +5,7 @@ function row({
   id,
   score,
   value,
+  lifetimeValue = null,
   serviceName = "Inspection",
   serviceAgentName = "Alex Rivera",
   organizationName = "Conserva Charleston",
@@ -14,6 +15,7 @@ function row({
   id: string;
   score: number | null;
   value: number | null;
+  lifetimeValue?: number | null;
   serviceName?: string | null;
   serviceAgentName?: string | null;
   organizationName?: string | null;
@@ -30,6 +32,7 @@ function row({
     serviceAgentName,
     organizationName,
     appointmentTotal: value,
+    contactLifetimeValue: lifetimeValue,
     firstAppointment,
     sesScore:
       score === null
@@ -113,6 +116,61 @@ describe("SES value analytics", () => {
 
     expect(positive.correlation).toBeCloseTo(1, 6);
     expect(noScoreVariance.correlation).toBeNull();
+  });
+
+  it("uses contact lifetime value when configured as the value metric", () => {
+    const analytics = buildSesValueAnalytics(
+      [
+        row({ id: "1", score: 40, value: 100, lifetimeValue: 300 }),
+        row({ id: "2", score: 60, value: 200, lifetimeValue: 200 }),
+        row({ id: "3", score: 80, value: 300, lifetimeValue: 100 }),
+      ],
+      { valueMetric: "contactLifetimeValue" },
+    );
+
+    expect(analytics.averageValue).toBe(200);
+    expect(analytics.lowScoreAverageValue).toBe(300);
+    expect(analytics.nonLowScoreAverageValue).toBe(150);
+  });
+
+  it("filters to paid appointments when the paid-only population is selected", () => {
+    const analytics = buildSesValueAnalytics(
+      [
+        row({ id: "1", score: 40, value: 0, lifetimeValue: 500 }),
+        row({ id: "2", score: 60, value: 100, lifetimeValue: 600 }),
+        row({ id: "3", score: 80, value: 200, lifetimeValue: 700 }),
+      ],
+      { population: "paidOnly" },
+    );
+
+    expect(analytics.analyzableRows).toBe(2);
+    expect(analytics.averageValue).toBe(150);
+    expect(analytics.lowScoreAverageValue).toBeNull();
+  });
+
+  it("returns a negative correlation when lower SES aligns with higher ticket values", () => {
+    const analytics = buildSesValueAnalytics([
+      row({ id: "1", score: 40, value: 300 }),
+      row({ id: "2", score: 60, value: 200 }),
+      row({ id: "3", score: 80, value: 100 }),
+    ]);
+
+    expect(analytics.correlation).toBeCloseTo(-1, 6);
+    expect(analytics.lowScoreAverageValue).toBe(300);
+    expect(analytics.nonLowScoreAverageValue).toBeCloseTo(150, 6);
+  });
+
+  it("calculates Spearman correlation for monotonic data", () => {
+    const analytics = buildSesValueAnalytics(
+      [
+        row({ id: "1", score: 10, value: 100 }),
+        row({ id: "2", score: 20, value: 1000 }),
+        row({ id: "3", score: 30, value: 10000 }),
+      ],
+      { correlationMode: "spearman" },
+    );
+
+    expect(analytics.correlation).toBeCloseTo(1, 6);
   });
 
   it("aggregates service, agent, organization, first-appointment, and month segments", () => {

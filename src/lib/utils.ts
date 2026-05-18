@@ -16,6 +16,19 @@ export function formatDate(value: string | null | undefined) {
   }).format(date);
 }
 
+export function formatDateTime(value: string | null | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
 export function formatNumber(value: number | null | undefined, options: Intl.NumberFormatOptions = {}) {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
   return new Intl.NumberFormat("en-US", options).format(value);

@@ -1,7 +1,9 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
+import { DESKTOP_USER_ID, isDesktopMode, isLocalSingleUserMode } from "@/lib/runtime";
 
 export function isClerkConfigured() {
+  if (isDesktopAuthEnabled()) return false;
   if (isVercelProtectedAuthEnabled()) return false;
   return Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY);
 }
@@ -11,10 +13,18 @@ export function isVercelProtectedAuthEnabled() {
 }
 
 export function isLocalAuthEnabled() {
-  return process.env.NODE_ENV !== "production" && process.env.AUTH_MODE === "local";
+  return isLocalSingleUserMode();
+}
+
+export function isDesktopAuthEnabled() {
+  return isDesktopMode();
 }
 
 export async function getCurrentUserId() {
+  if (isDesktopAuthEnabled()) {
+    return DESKTOP_USER_ID;
+  }
+
   if (isVercelProtectedAuthEnabled()) {
     return "vercel-protected-user";
   }

@@ -7,12 +7,12 @@ describe("settings security", () => {
     expect(parseExcludedServiceNames([" Repair Visit ", "Repair Visit", "", 4, null])).toEqual(["Repair Visit"]);
   });
 
-  it("encrypts and decrypts API keys without exposing the raw key in public settings", () => {
+  it("encrypts and decrypts API keys without exposing the raw key in public settings", async () => {
     process.env.APP_ENCRYPTION_KEY = "test-encryption-key-that-is-long-enough";
-    const encrypted = encryptSecret("sm_live_123456789");
+    const encrypted = await encryptSecret("sm_live_123456789");
 
     expect(encrypted).not.toContain("sm_live_123456789");
-    expect(decryptSecret(encrypted)).toBe("sm_live_123456789");
+    await expect(decryptSecret(encrypted)).resolves.toBe("sm_live_123456789");
     expect(apiKeyHint("sm_live_123456789")).toBe("sm_l…6789");
 
     const settings = publicSettings({

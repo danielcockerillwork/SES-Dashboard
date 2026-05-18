@@ -9,6 +9,7 @@ import {
   publicSettings,
   type PublicSettings,
 } from "@/lib/settings";
+import { isDesktopMode } from "@/lib/runtime";
 import { ServiceMinderClient } from "@/lib/serviceminder/client";
 import { resolveCurrentServiceMinderOrganization } from "@/lib/serviceminder/identity";
 
@@ -32,19 +33,19 @@ async function loadInitialSettings(): Promise<PublicSettings> {
     return fallbackPublicSettings("Sign in is required before settings can be loaded.");
   }
 
-  if (!isDatabaseConfigured()) {
+  if (!isDesktopMode() && !isDatabaseConfigured()) {
     return fallbackPublicSettings("DATABASE_URL is required to save user-level API settings.");
   }
 
   try {
-    await getPrisma().$queryRaw`SELECT 1`;
+    if (!isDesktopMode()) await getPrisma().$queryRaw`SELECT 1`;
     const settings = await getSettings(userId);
     if (!settings.encryptedApiKey) return publicSettings(settings);
 
     try {
       const client = new ServiceMinderClient({
         baseUrl: settings.apiBaseUrl || DEFAULT_BASE_URL,
-        apiKey: decryptSecret(settings.encryptedApiKey),
+        apiKey: await decryptSecret(settings.encryptedApiKey),
       });
       const organization = await resolveCurrentServiceMinderOrganization(client);
       return publicSettings(settings, organization);

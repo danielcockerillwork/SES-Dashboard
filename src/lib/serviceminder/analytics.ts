@@ -14,9 +14,20 @@ export type AnalyticsAppointmentRow = Pick<
   | "serviceAgentName"
   | "organizationName"
   | "appointmentTotal"
+  | "contactLifetimeValue"
   | "firstAppointment"
   | "sesScore"
 >;
+
+export type AnalyticsValueMetric = "appointmentTotal" | "contactLifetimeValue";
+export type AnalyticsPopulation = "allCompleted" | "paidOnly";
+export type AnalyticsCorrelationMode = "pearson" | "spearman";
+
+export type AnalyticsOptions = {
+  valueMetric?: AnalyticsValueMetric;
+  population?: AnalyticsPopulation;
+  correlationMode?: AnalyticsCorrelationMode;
+};
 
 export type SesValuePoint<T extends AnalyticsAppointmentRow = AnalyticsAppointmentRow> = {
   row: T;
@@ -54,6 +65,9 @@ export type SesValueSegment = {
 };
 
 export type SesValueAnalytics<T extends AnalyticsAppointmentRow = AnalyticsAppointmentRow> = {
+  valueMetric: AnalyticsValueMetric;
+  population: AnalyticsPopulation;
+  correlationMode: AnalyticsCorrelationMode;
   analyzableRows: number;
   averageScore: number | null;
   averageValue: number | null;
@@ -95,6 +109,26 @@ function average(values: number[]) {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 }
 
+function rank(values: number[]) {
+  const sorted = values
+    .map((value, index) => ({ value, index }))
+    .sort((left, right) => left.value - right.value || left.index - right.index);
+  const ranks = new Array<number>(values.length);
+
+  let start = 0;
+  while (start < sorted.length) {
+    let end = start + 1;
+    while (end < sorted.length && sorted[end].value === sorted[start].value) end += 1;
+    const averageRank = (start + 1 + end) / 2;
+    for (let index = start; index < end; index += 1) {
+      ranks[sorted[index].index] = averageRank;
+    }
+    start = end;
+  }
+
+  return ranks;
+}
+
 function nearestRankPercentile(values: number[], percentile: number) {
   if (!values.length) return null;
   const sorted = [...values].sort((left, right) => left - right);
@@ -123,6 +157,14 @@ function pearsonCorrelation(points: Array<{ score: number; value: number }>) {
 
   const denominator = Math.sqrt(scoreVariance * valueVariance);
   return denominator === 0 ? null : numerator / denominator;
+}
+
+function spearmanCorrelation(points: Array<{ score: number; value: number }>) {
+  if (points.length < 2) return null;
+  const scoreRanks = rank(points.map((point) => point.score));
+  const valueRanks = rank(points.map((point) => point.value));
+  const rankPoints = scoreRanks.map((score, index) => ({ score, value: valueRanks[index] }));
+  return pearsonCorrelation(rankPoints);
 }
 
 function periodKey(row: AnalyticsAppointmentRow) {
@@ -204,12 +246,17 @@ function bandRows<T extends AnalyticsAppointmentRow>(
 
 export function buildSesValueAnalytics<T extends AnalyticsAppointmentRow>(
   rows: T[],
+  options: AnalyticsOptions = {},
 ): SesValueAnalytics<T> {
-  const analyzableRows = rows
+  const valueMetric = options.valueMetric ?? "appointmentTotal";
+  const population = options.population ?? "allCompleted";
+  const correlationMode = options.correlationMode ?? "pearson";
+  const populationRows = population === "paidOnly" ? rows.filter((row) => isFiniteNumber(row.appointmentTotal) && row.appointmentTotal > 0) : rows;
+  const analyzableRows = populationRows
     .map((row) => ({
       row,
       score: row.sesScore?.numericValue,
-      value: row.appointmentTotal,
+      value: valueMetric === "contactLifetimeValue" ? row.contactLifetimeValue : row.appointmentTotal,
     }))
     .filter(
       (point): point is { row: T; score: number; value: number } =>
@@ -236,6 +283,9 @@ export function buildSesValueAnalytics<T extends AnalyticsAppointmentRow>(
   const ticketValues = points.map((point) => point.value);
 
   return {
+    valueMetric,
+    population,
+    correlationMode,
     analyzableRows: points.length,
     averageScore: average(points.map((point) => point.score)),
     averageValue: average(ticketValues),
@@ -244,7 +294,7 @@ export function buildSesValueAnalytics<T extends AnalyticsAppointmentRow>(
     lowScoreAverageValue: average(lowScorePoints.map((point) => point.value)),
     nonLowScoreAverageValue: average(nonLowScorePoints.map((point) => point.value)),
     highTicketThreshold,
-    correlation: pearsonCorrelation(points),
+    correlation: correlationMode === "spearman" ? spearmanCorrelation(points) : pearsonCorrelation(points),
     points,
     bands: bandRows(points, points.length),
     outliers: points

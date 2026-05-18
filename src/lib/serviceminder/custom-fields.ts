@@ -25,6 +25,20 @@ const FIELD_VALUE_KEYS = [
   "TextValue",
   "NumberValue",
   "DecimalValue",
+  "Decimal",
+  "Amount",
+  "CurrencyValue",
+  "MoneyValue",
+  "CurrentValue",
+  "TotalValue",
+  "CashValue",
+  "ValueText",
+  "ValueString",
+  "Money",
+  "NumericValue",
+  "ValueAmount",
+  "ValueDecimal",
+  "ValueNumber",
   "BoolValue",
   "BooleanValue",
   "SelectedValue",
@@ -35,7 +49,7 @@ const FIELD_VALUE_KEYS = [
 
 const FIELD_KEY_KEYS = ["Shortcode", "ShortCode", "Code", "Key", "FieldName", "Name"];
 
-const CONTAINER_KEY_PATTERN = /(custom.*field|field.*value|appointment.*field|answer|survey|scorecard|checklist)/i;
+const CONTAINER_KEY_PATTERN = /(custom.*(field|propert(?:y|ies)|value)|field.*value|appointment.*field|answer|survey|scorecard|checklist)/i;
 const DIRECT_CUSTOM_KEY_PATTERN = /^(custom(?!er)(field|score|rating|[_-])|cf_|field_|score_|rating_)/i;
 const SCORE_NAME_PATTERN = /(score|rating|nps|satisfaction|quality|grade|stars|points|survey)/i;
 
@@ -97,7 +111,7 @@ function numericValue(value: unknown) {
     return Number.isFinite(parsed) ? parsed : null;
   }
 
-  const normalized = trimmed.replace(/[$,%]/g, "");
+  const normalized = trimmed.replace(/[$,% ,]/g, "");
   if (!/^-?\d+(\.\d+)?$/.test(normalized)) return null;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;

@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import {
   AlertTriangle,
   BarChart3,
@@ -31,6 +31,7 @@ import { DateRangeFields } from "@/components/date-range-fields";
 import { MultiSelectFilter } from "@/components/multi-select-filter";
 import { MetricCard } from "@/components/metric-card";
 import { PageHeading } from "@/components/page-heading";
+import { AppointmentHistoryHover, AppointmentHistoryPanel } from "@/components/appointment-history-hover";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -48,12 +49,13 @@ import {
   type DateRangePreset,
 } from "@/lib/utils";
 import type { PublicSettings } from "@/lib/settings";
-import { applyExcludedServicesToReport } from "@/lib/serviceminder/reporting";
+import { applyExcludedServicesToReport } from "@/lib/serviceminder/report-view";
 import { isExcludedServiceName } from "@/lib/serviceminder/service-exclusions";
 import {
   buildSesValueAnalytics,
   LOW_SES_SCORE_THRESHOLD,
   type SesValueAnalytics,
+  type SesValueBand,
   type SesValueSegment,
 } from "@/lib/serviceminder/analytics";
 import type {
@@ -134,6 +136,15 @@ const pageSizeOptions = [25, 50, 100] as const;
 type PageSize = (typeof pageSizeOptions)[number];
 type DashboardTab = "overview" | "analytics";
 type DrilldownMetricKey = "completed" | "hasSesScore" | "averageSesScore" | "firstAppointments" | "firstVisitsWithSes" | "missingSesScore";
+type AnalyticsValueMetric = "appointmentTotal" | "contactLifetimeValue";
+type AnalyticsPopulation = "allCompleted" | "paidOnly";
+type AnalyticsCorrelationMode = "pearson" | "spearman";
+
+type AnalyticsSettings = {
+  valueMetric: AnalyticsValueMetric;
+  population: AnalyticsPopulation;
+  correlationMode: AnalyticsCorrelationMode;
+};
 
 type AppointmentColumnFilters = {
   id: string;
@@ -168,6 +179,12 @@ const drilldownMetricLabels: Record<DrilldownMetricKey, string> = {
   missingSesScore: "Missing SES score",
 };
 
+const emptyAnalyticsSettings: AnalyticsSettings = {
+  valueMetric: "appointmentTotal",
+  population: "allCompleted",
+  correlationMode: "pearson",
+};
+
 function selectClassName() {
   return "h-9 w-full min-w-0 rounded-md border bg-background px-3 text-sm text-foreground shadow-sm outline-none focus-visible:border-primary/50 focus-visible:ring-2 focus-visible:ring-ring";
 }
@@ -179,6 +196,34 @@ function uniqueOptions(rows: PublicRow[], key: "serviceAgentName" | "serviceName
 function scoreRangeText(field: CustomFieldScoreSummary) {
   if (field.min === null || field.max === null) return "No numeric scores";
   return `${formatScore(field.min)}-${formatScore(field.max)}`;
+}
+
+function analyticsValueMetricLabel(metric: AnalyticsValueMetric) {
+  return metric === "contactLifetimeValue" ? "Lifetime value" : "Ticket value";
+}
+
+function analyticsValueMetricLowerLabel(metric: AnalyticsValueMetric) {
+  return metric === "contactLifetimeValue" ? "lifetime value" : "ticket value";
+}
+
+function analyticsPopulationLabel(population: AnalyticsPopulation) {
+  return population === "paidOnly" ? "Paid appointments only" : "All completed appointments";
+}
+
+function analyticsCorrelationLabel(mode: AnalyticsCorrelationMode) {
+  return mode === "spearman" ? "Spearman rho" : "Pearson r";
+}
+
+function isAnalyticsValueMetric(value: unknown): value is AnalyticsValueMetric {
+  return value === "appointmentTotal" || value === "contactLifetimeValue";
+}
+
+function isAnalyticsPopulation(value: unknown): value is AnalyticsPopulation {
+  return value === "allCompleted" || value === "paidOnly";
+}
+
+function isAnalyticsCorrelationMode(value: unknown): value is AnalyticsCorrelationMode {
+  return value === "pearson" || value === "spearman";
 }
 
 function filterRecord({
@@ -277,6 +322,16 @@ function isDashboardFilters(value: unknown): value is DashboardFilters {
     typeof record.minScore === "string" &&
     typeof record.maxScore === "string" &&
     typeof record.search === "string"
+  );
+}
+
+function isAnalyticsSettings(value: unknown): value is AnalyticsSettings {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<AnalyticsSettings>;
+  return (
+    isAnalyticsValueMetric(record.valueMetric) &&
+    isAnalyticsPopulation(record.population) &&
+    isAnalyticsCorrelationMode(record.correlationMode)
   );
 }
 
@@ -424,6 +479,7 @@ function readDashboardStorage() {
       activeTab?: unknown;
       activeDrilldownMetric?: unknown;
       appointmentColumnFilters?: unknown;
+      analyticsSettings?: unknown;
     };
 
     return {
@@ -449,9 +505,10 @@ function readDashboardStorage() {
                 Object.keys(emptyAppointmentColumnFilters)
                   .filter((key) => typeof (parsed.appointmentColumnFilters as Record<string, unknown>)[key] === "string")
                   .map((key) => [key, (parsed.appointmentColumnFilters as Record<string, string>)[key]]),
-              ),
+                ),
             } as AppointmentColumnFilters)
           : null,
+      analyticsSettings: isAnalyticsSettings(parsed.analyticsSettings) ? parsed.analyticsSettings : null,
     };
   } catch {
     return null;
@@ -486,11 +543,11 @@ function formatAppointmentCounts(row: PublicRow) {
   return `${formatNumber(counts.total)} total · ${formatNumber(counts.completed)} completed · ${formatNumber(counts.upcoming)} upcoming`;
 }
 
-function PreviewDetail({ label, value }: { label: string; value: string }) {
+function PreviewDetail({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="min-w-0 rounded-md border bg-background/80 px-3 py-2">
       <p className="text-[11px] font-medium uppercase tracking-normal text-muted-foreground">{label}</p>
-      <p className="mt-1 truncate text-sm font-semibold text-foreground">{value}</p>
+      <div className="mt-1 text-sm font-semibold text-foreground">{value}</div>
     </div>
   );
 }
@@ -508,6 +565,7 @@ function AppointmentDetailsPanel({
   loadingDetails: boolean;
   detailError: string | null;
 }) {
+  const [appointmentHistoryOpen, setAppointmentHistoryOpen] = useState(false);
   const lineItems = Array.isArray(row.lineItems) ? row.lineItems : [];
   const hasServicePrice = typeof row.servicePrice === "number";
   const hasLineItems = lineItems.length > 0;
@@ -532,11 +590,35 @@ function AppointmentDetailsPanel({
           <PreviewDetail label="Customer" value={previewText(row.customerName)} />
           <PreviewDetail label="Service" value={previewText(row.serviceName)} />
           <PreviewDetail label="Lifetime value" value={formatCurrency(row.contactLifetimeValue)} />
-          <PreviewDetail label="Appointments" value={formatAppointmentCounts(row)} />
+          <PreviewDetail
+            label="Appointments"
+            value={
+              <AppointmentHistoryHover
+                counts={row.contactAppointmentCounts}
+                history={row.contactAppointmentHistory}
+                summary={formatAppointmentCounts(row)}
+                label={formatAppointmentCounts(row)}
+                triggerClassName="text-sm font-semibold text-foreground"
+                open={appointmentHistoryOpen}
+                onToggle={() => setAppointmentHistoryOpen((current) => !current)}
+                renderPanel={false}
+              />
+            }
+          />
           <PreviewDetail label="Technician" value={previewText(row.serviceAgentName)} />
           <PreviewDetail label="SES score" value={row.sesScore?.displayValue || "—"} />
           <PreviewDetail label="Status" value={previewText(row.status)} />
         </div>
+
+        {appointmentHistoryOpen ? (
+          <div className="mt-3">
+            <AppointmentHistoryPanel
+              counts={row.contactAppointmentCounts}
+              history={row.contactAppointmentHistory}
+              summary={formatAppointmentCounts(row)}
+            />
+          </div>
+        ) : null}
 
         <div className="mt-3 rounded-md border bg-accent/25 p-3">
           <div className="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-normal text-muted-foreground">
@@ -611,25 +693,24 @@ function tabButtonClassName(active: boolean) {
   ].join(" ");
 }
 
-function formatCorrelation(value: number | null) {
-  return formatNumber(value, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
-function correlationDetail(value: number | null) {
-  if (value === null) return "Needs score and ticket variation";
-  const absolute = Math.abs(value);
-  if (absolute >= 0.7) return value > 0 ? "Strong positive relationship" : "Strong inverse relationship";
-  if (absolute >= 0.4) return value > 0 ? "Moderate positive relationship" : "Moderate inverse relationship";
-  if (absolute >= 0.2) return value > 0 ? "Light positive relationship" : "Light inverse relationship";
-  return "Weak relationship";
-}
-
 function barWidth(value: number | null, max: number) {
   if (!value || max <= 0) return 0;
   return Math.max(3, Math.min(100, (value / max) * 100));
+}
+
+function formatSignedCurrency(value: number) {
+  return `${value >= 0 ? "+" : "-"}${formatCurrency(Math.abs(value))}`;
+}
+
+function lowVsHighTicketDelta(analytics: SesValueAnalytics<PublicRow>) {
+  if (analytics.lowScoreAverageValue === null || analytics.nonLowScoreAverageValue === null) return null;
+  return analytics.lowScoreAverageValue - analytics.nonLowScoreAverageValue;
+}
+
+function lowVsHighTicketLiftPercent(analytics: SesValueAnalytics<PublicRow>) {
+  if (analytics.lowScoreAverageValue === null || analytics.nonLowScoreAverageValue === null) return null;
+  if (analytics.nonLowScoreAverageValue === 0) return null;
+  return ((analytics.lowScoreAverageValue - analytics.nonLowScoreAverageValue) / analytics.nonLowScoreAverageValue) * 100;
 }
 
 function firstVisitSesScoreCoverage(rows: PublicRow[]) {
@@ -754,35 +835,183 @@ function SegmentTable({ title, rows }: { title: string; rows: SesValueSegment[] 
   );
 }
 
-function AnalyticsBandChart({ analytics }: { analytics: SesValueAnalytics<PublicRow> }) {
-  const maxAverageValue = Math.max(...analytics.bands.map((band) => band.averageValue ?? 0), 1);
+function AnalyticsBandChart({ analytics, valueLabel }: { analytics: SesValueAnalytics<PublicRow>; valueLabel: string }) {
+  const numericValues = analytics.bands.map((band) => band.averageValue).filter((value): value is number => value !== null);
+  const maxAverageValue = Math.max(...numericValues, 1);
+  const axisMax = (() => {
+    if (maxAverageValue <= 0) return 1;
+    const niceSteps = [25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
+    const targetStep = maxAverageValue / 4;
+    const step = niceSteps.find((candidate) => candidate >= targetStep) ?? niceSteps[niceSteps.length - 1];
+    return Math.ceil(maxAverageValue / step) * step;
+  })();
+  const axisMin = 0;
+  const axisRange = Math.max(axisMax - axisMin, 1);
+  const plotLeft = 18;
+  const plotRight = 98;
+  const plotTop = 8;
+  const plotBottom = 40;
+  const plotHeight = plotBottom - plotTop;
+  const plotWidth = plotRight - plotLeft;
+  const tickValues = [0, 0.25, 0.5, 0.75, 1].map((fraction) => axisMin + axisRange * fraction);
+  const points = analytics.bands
+    .map((band, index) => {
+      if (band.averageValue === null) return null;
+      const x = analytics.bands.length === 1 ? (plotLeft + plotRight) / 2 : plotLeft + (index / (analytics.bands.length - 1)) * plotWidth;
+      const y = plotBottom - ((band.averageValue - axisMin) / axisRange) * plotHeight;
+      return { x, y, band };
+    })
+    .filter((point): point is { x: number; y: number; band: SesValueBand } => Boolean(point));
+  const rankedBands = analytics.bands.map((band, index) => {
+    const previousBand = index > 0 ? analytics.bands[index - 1] : null;
+    const previousAverageValue = previousBand?.averageValue ?? null;
+    const deltaFromPrevious =
+      band.averageValue !== null && previousAverageValue !== null ? band.averageValue - previousAverageValue : null;
+
+    return {
+      band,
+      index,
+      deltaFromPrevious,
+    };
+  });
 
   return (
-    <div className="grid gap-3">
-      {analytics.bands.map((band) => (
-        <div key={band.key} className="rounded-md border bg-accent/20 p-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="font-medium">SES {band.label}</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {formatNumber(band.count)} rows · {formatPercent(band.percentOfAnalyzable)} of analyzable appointments
-              </p>
-            </div>
-            <div className="text-right">
-              <p className="text-sm font-semibold">{formatCurrency(band.averageValue)}</p>
-              <p className="text-xs text-muted-foreground">avg value</p>
-            </div>
-          </div>
-          <div className="mt-3 h-2 rounded-full bg-background">
-            <div className="h-2 rounded-full bg-primary" style={{ width: `${barWidth(band.averageValue, maxAverageValue)}%` }} />
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span>Total {formatCurrency(band.totalValue)}</span>
-            <span>Avg SES {formatScore(band.averageScore)}</span>
-            <span>{formatNumber(band.outlierCount)} low-score high-ticket</span>
-          </div>
+    <div className="grid gap-3 xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)] xl:items-start">
+      <div className="rounded-md border bg-background px-3 py-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <p className="font-medium uppercase tracking-normal text-muted-foreground">Trend line</p>
+          <p className="text-muted-foreground">Lower SES tends toward higher average {valueLabel}.</p>
         </div>
-      ))}
+        <svg
+          viewBox="0 0 112 48"
+          className="mt-1.5 h-20 w-full"
+          role="img"
+          aria-label={`Average ${valueLabel} by SES band slope chart`}
+        >
+          <line x1={plotLeft} y1={plotBottom} x2={plotRight} y2={plotBottom} className="stroke-border" strokeWidth="1" />
+          <line x1={plotLeft} y1={plotTop} x2={plotLeft} y2={plotBottom} className="stroke-border" strokeWidth="1" />
+          {tickValues.map((tickValue) => {
+            const y = plotBottom - ((tickValue - axisMin) / axisRange) * plotHeight;
+            return (
+              <g key={tickValue}>
+                <line x1={plotLeft} y1={y} x2={plotRight} y2={y} className="stroke-border/60" strokeWidth="0.75" />
+                <text x="2" y={y + 1} className="fill-muted-foreground text-[4px] font-medium">
+                  {formatCurrency(tickValue)}
+                </text>
+              </g>
+            );
+          })}
+          <text x={plotLeft + 1} y="46" className="fill-muted-foreground text-[4px] font-medium">
+            Lower SES
+          </text>
+          <text x={plotRight - 1} y="46" textAnchor="end" className="fill-muted-foreground text-[4px] font-medium">
+            Higher SES
+          </text>
+          {points.length > 1 ? (
+            <polyline
+              points={points.map((point) => `${point.x},${point.y}`).join(" ")}
+              fill="none"
+              className="stroke-primary"
+              strokeWidth="2.5"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          ) : null}
+          {points.map((point) => (
+            <g key={point.band.key}>
+              <circle cx={point.x} cy={point.y} r="2.5" className="fill-primary" />
+              <text
+                x={point.x}
+                y={Math.max(6, point.y - 3)}
+                textAnchor="middle"
+                className="fill-foreground text-[4px] font-medium"
+              >
+                {formatCurrency(point.band.averageValue)}
+              </text>
+              <title>{`${point.band.label}: ${formatCurrency(point.band.averageValue)}`}</title>
+            </g>
+          ))}
+        </svg>
+        <div className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+          {analytics.bands.map((band) => (
+            <span key={band.key} className="min-w-0 truncate">
+              SES {band.label}: {formatCurrency(band.averageValue)}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="rounded-md border bg-accent/20 px-3 py-2.5">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">Band comparison</p>
+          <p className="text-xs text-muted-foreground">Ordered low SES to high SES on the same scale.</p>
+        </div>
+        <div className="table-scrollbar overflow-x-auto">
+          <table className="w-full min-w-[640px] text-left text-sm">
+            <thead className="border-b text-[11px] uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="px-2 py-2 font-medium">Band</th>
+                <th className="px-2 py-2 font-medium">Rows</th>
+                <th className="px-2 py-2 font-medium">Avg SES</th>
+                <th className="px-2 py-2 font-medium">Avg {valueLabel}</th>
+                <th className="px-2 py-2 font-medium">Delta</th>
+                <th className="px-2 py-2 font-medium">Outliers</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rankedBands.map(({ band, index, deltaFromPrevious }) => (
+                <tr key={band.key} className="border-b last:border-0">
+                  <td className="px-2 py-2">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="border-border/70 bg-background/70 text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {index + 1} / {analytics.bands.length}
+                      </Badge>
+                      <span className="font-medium">SES {band.label}</span>
+                    </div>
+                  </td>
+                  <td className="px-2 py-2 text-muted-foreground">
+                    {formatNumber(band.count)} ({formatPercent(band.percentOfAnalyzable)})
+                  </td>
+                  <td className="px-2 py-2">{formatScore(band.averageScore)}</td>
+                  <td className="px-2 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-16 shrink-0 font-semibold tabular-nums">{formatCurrency(band.averageValue)}</span>
+                      <div className="h-2 min-w-24 flex-1 rounded-full bg-background">
+                        <div
+                          className={[
+                            "h-2 rounded-full",
+                            deltaFromPrevious === null ? "bg-primary" : deltaFromPrevious <= 0 ? "bg-emerald-500" : "bg-amber-500",
+                          ].join(" ")}
+                          style={{ width: `${barWidth(band.averageValue, axisMax)}%` }}
+                        />
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-2 py-2">
+                    {deltaFromPrevious === null ? (
+                      <span className="text-muted-foreground">Baseline</span>
+                    ) : (
+                      <Badge
+                        variant="outline"
+                        className={[
+                          "text-[10px] uppercase tracking-wide",
+                          deltaFromPrevious <= 0
+                            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                            : "border-amber-500/30 bg-amber-500/10 text-amber-200",
+                        ].join(" ")}
+                      >
+                        {deltaFromPrevious < 0 ? "↓" : "↑"} {formatSignedCurrency(deltaFromPrevious)}
+                      </Badge>
+                    )}
+                  </td>
+                  <td className="px-2 py-2">
+                    <Badge variant={band.outlierCount ? "warning" : "outline"}>{formatNumber(band.outlierCount)}</Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -793,6 +1022,7 @@ function AnalyticsOutlierTable({
   expandedAppointmentId,
   appointmentDetailRow,
   toggleAppointmentDetails,
+  valueLabel,
 }: {
   analytics: SesValueAnalytics<PublicRow>;
   loading: boolean;
@@ -803,13 +1033,14 @@ function AnalyticsOutlierTable({
     detailError: string | null;
   };
   toggleAppointmentDetails: (row: PublicRow) => void;
+  valueLabel: string;
 }) {
   return (
     <Card className="mt-6">
       <CardHeader>
-        <CardTitle>Low SES High-Ticket Appointments</CardTitle>
+        <CardTitle>Low SES high {valueLabel.toLowerCase()} appointments</CardTitle>
         <CardDescription>
-          SES below {LOW_SES_SCORE_THRESHOLD} with value at or above the positive-ticket 75th percentile.
+          SES below {LOW_SES_SCORE_THRESHOLD} with {valueLabel.toLowerCase()} at or above the positive-row 75th percentile.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -891,7 +1122,7 @@ function AnalyticsOutlierTable({
               {!analytics.outliers.length ? (
                 <tr>
                   <td className="px-3 py-8 text-center text-muted-foreground" colSpan={7}>
-                    {loading ? "Loading analytics..." : "No low-score high-ticket appointments for the current filters."}
+                    {loading ? "Loading analytics..." : `No low-score high ${valueLabel.toLowerCase()} appointments for the current filters.`}
                   </td>
                 </tr>
               ) : null}
@@ -910,6 +1141,8 @@ function AnalyticsTab({
   expandedAppointmentId,
   appointmentDetailRow,
   toggleAppointmentDetails,
+  analyticsSettings,
+  setAnalyticsSettings,
 }: {
   analytics: SesValueAnalytics<PublicRow>;
   firstVisitCoverage: ReturnType<typeof firstVisitSesScoreCoverage>;
@@ -921,7 +1154,19 @@ function AnalyticsTab({
     detailError: string | null;
   };
   toggleAppointmentDetails: (row: PublicRow) => void;
+  analyticsSettings: AnalyticsSettings;
+  setAnalyticsSettings: Dispatch<SetStateAction<AnalyticsSettings>>;
 }) {
+  const valueLabel = analyticsValueMetricLabel(analyticsSettings.valueMetric);
+  const valueLabelLower = analyticsValueMetricLowerLabel(analyticsSettings.valueMetric);
+  const populationLabel = analyticsPopulationLabel(analyticsSettings.population);
+  const correlationLabel = analyticsCorrelationLabel(analyticsSettings.correlationMode);
+  const summaryDelta = lowVsHighTicketDelta(analytics);
+  const summaryLift = lowVsHighTicketLiftPercent(analytics);
+  const summarySentence =
+    analytics.lowScoreAverageValue === null || analytics.nonLowScoreAverageValue === null
+      ? `Not enough ${valueLabelLower} data to compare low versus 50+ SES rows yet.`
+      : `Low SES rows average ${formatCurrency(analytics.lowScoreAverageValue)} vs ${formatCurrency(analytics.nonLowScoreAverageValue)} for 50+ SES rows, a gap of ${formatCurrency(summaryDelta)} (${formatPercent(summaryLift)}).`;
   const segmentTables = [
     { title: "By Service", rows: analytics.segments.service },
     { title: "By Technician", rows: analytics.segments.serviceAgent },
@@ -932,40 +1177,129 @@ function AnalyticsTab({
 
   return (
     <>
-      <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+      <Card className="mt-6">
+        <CardHeader className="space-y-1 pb-3">
+          <CardTitle>Analysis Lens</CardTitle>
+          <CardDescription>Shape the comparison before reading the results.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-3 md:items-end">
+          <div className="grid gap-2">
+            <Label htmlFor="analyticsValueMetric">Measure</Label>
+            <select
+              id="analyticsValueMetric"
+              value={analyticsSettings.valueMetric}
+              onChange={(event) =>
+                setAnalyticsSettings((current) => ({ ...current, valueMetric: event.target.value as AnalyticsValueMetric }))
+              }
+              className={selectClassName()}
+            >
+              <option value="appointmentTotal">Appointment total</option>
+              <option value="contactLifetimeValue">Contact lifetime value</option>
+            </select>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="analyticsPopulation">Rows included</Label>
+            <select
+              id="analyticsPopulation"
+              value={analyticsSettings.population}
+              onChange={(event) =>
+                setAnalyticsSettings((current) => ({ ...current, population: event.target.value as AnalyticsPopulation }))
+              }
+              className={selectClassName()}
+            >
+              <option value="allCompleted">All completed appointments</option>
+              <option value="paidOnly">Paid appointments only</option>
+            </select>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="analyticsCorrelationMode">Trend test</Label>
+            <select
+              id="analyticsCorrelationMode"
+              value={analyticsSettings.correlationMode}
+              onChange={(event) =>
+                setAnalyticsSettings((current) => ({
+                  ...current,
+                  correlationMode: event.target.value as AnalyticsCorrelationMode,
+                }))
+              }
+              className={selectClassName()}
+            >
+              <option value="pearson">Pearson r</option>
+              <option value="spearman">Spearman rho</option>
+            </select>
+          </div>
+          <div className="rounded-md border bg-accent/20 px-4 py-3 md:col-span-3">
+            <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">Selected view</p>
+            <p className="mt-1 text-sm">
+              {populationLabel} · {valueLabel} · {correlationLabel}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {correlationLabel} shows how SES moves against selected {valueLabelLower} in the current filtered rows.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="mt-4 rounded-lg border bg-accent/15 px-4 py-3 text-sm text-foreground">
+        <span className="font-medium">Takeaway:</span> {summarySentence}
+      </div>
+
+      <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <MetricCard
           label="Analyzable rows"
           value={loading ? "…" : formatNumber(analytics.analyzableRows)}
-          detail="Rows with SES and value"
+          detail={`Rows with SES and ${valueLabelLower}`}
           icon={Layers}
           tone="info"
         />
         <MetricCard
-          label="High-ticket threshold"
+          label={`High ${valueLabelLower} threshold`}
           value={loading ? "…" : formatCurrency(analytics.highTicketThreshold)}
-          detail="75th pct positive tickets"
+          detail="75th percentile among positive rows"
           icon={DollarSign}
           tone="good"
         />
         <MetricCard
-          label="Low SES high-ticket"
+          label={`Low SES high ${valueLabelLower}`}
           value={loading ? "…" : formatNumber(analytics.outliers.length)}
           detail={`SES below ${LOW_SES_SCORE_THRESHOLD}`}
           icon={TrendingDown}
           tone={analytics.outliers.length ? "warning" : "default"}
         />
         <MetricCard
-          label="SES/value correlation"
-          value={loading ? "…" : formatCorrelation(analytics.correlation)}
-          detail={correlationDetail(analytics.correlation)}
+          label={`Low SES avg ${valueLabelLower}`}
+          value={loading ? "…" : formatCurrency(analytics.lowScoreAverageValue)}
+          detail={`SES ${LOW_SES_SCORE_THRESHOLD - 1} and below`}
           icon={LineChart}
           tone="info"
         />
         <MetricCard
-          label="Low SES avg value"
-          value={loading ? "…" : formatCurrency(analytics.lowScoreAverageValue)}
-          detail={`SES ${LOW_SES_SCORE_THRESHOLD - 1} and below`}
+          label={`50+ SES avg ${valueLabelLower}`}
+          value={loading ? "…" : formatCurrency(analytics.nonLowScoreAverageValue)}
+          detail={`SES ${LOW_SES_SCORE_THRESHOLD}+`}
+          icon={TrendingDown}
+          tone="good"
+        />
+        <MetricCard
+          label="Gap"
+          value={loading ? "…" : formatCurrency(lowVsHighTicketDelta(analytics))}
+          detail={`Low SES minus 50+ ${valueLabelLower}`}
           icon={BarChart3}
+          tone={loading ? "default" : lowVsHighTicketDelta(analytics) === null ? "default" : lowVsHighTicketDelta(analytics)! > 0 ? "good" : "warning"}
+        />
+        <MetricCard
+          label="Lift vs 50+"
+          value={loading ? "…" : formatPercent(lowVsHighTicketLiftPercent(analytics))}
+          detail={`Relative difference vs 50+ ${valueLabelLower}`}
+          icon={Target}
+          tone={loading ? "default" : lowVsHighTicketLiftPercent(analytics) === null ? "default" : lowVsHighTicketLiftPercent(analytics)! > 0 ? "good" : "warning"}
+        />
+        <MetricCard
+          label="Correlation"
+          value={loading ? "…" : formatNumber(analytics.correlation, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          detail={`${correlationLabel} on ${valueLabelLower}`}
+          icon={LineChart}
+          tone="info"
         />
         <MetricCard
           label="First visits with SES"
@@ -976,43 +1310,42 @@ function AnalyticsTab({
         />
       </div>
 
-      <div className="mt-6 grid gap-6 xl:grid-cols-[1fr_360px]">
-        <Card>
-          <CardHeader>
-            <CardTitle>SES Band Value Comparison</CardTitle>
-            <CardDescription>Average completed appointment value by SES score band.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <AnalyticsBandChart analytics={analytics} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Score Value Split</CardTitle>
-            <CardDescription>Current filtered rows grouped by low versus non-low SES scores.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
+      <Card className="mt-6">
+        <CardHeader className="pb-3">
+          <CardTitle>Executive Summary</CardTitle>
+          <CardDescription>Compact view of the SES trend and the low-versus-high split.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-6 xl:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.7fr)]">
+          <div>
+            <p className="mb-3 text-xs font-medium uppercase tracking-normal text-muted-foreground">SES band trend</p>
+            <AnalyticsBandChart analytics={analytics} valueLabel={valueLabelLower} />
+          </div>
+          <div className="grid gap-3">
             <div className="rounded-md border bg-accent/20 p-3">
-              <p className="text-xs text-muted-foreground">Low SES avg value</p>
+              <p className="text-xs text-muted-foreground">Low SES avg {valueLabelLower}</p>
               <p className="mt-1 text-2xl font-semibold">{formatCurrency(analytics.lowScoreAverageValue)}</p>
               <p className="mt-1 text-xs text-muted-foreground">{formatNumber(analytics.lowScoreCount)} appointments</p>
             </div>
             <div className="rounded-md border bg-accent/20 p-3">
-              <p className="text-xs text-muted-foreground">SES {LOW_SES_SCORE_THRESHOLD}+ avg value</p>
+              <p className="text-xs text-muted-foreground">SES {LOW_SES_SCORE_THRESHOLD}+ avg {valueLabelLower}</p>
               <p className="mt-1 text-2xl font-semibold">{formatCurrency(analytics.nonLowScoreAverageValue)}</p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {formatNumber(Math.max(0, analytics.analyzableRows - analytics.lowScoreCount))} appointments
               </p>
             </div>
-            <div className="rounded-md border bg-accent/20 p-3">
-              <p className="text-xs text-muted-foreground">Analyzable total value</p>
+            <div className="rounded-md border bg-background/80 p-3">
+              <p className="text-xs text-muted-foreground">Gap</p>
+              <p className="mt-1 text-2xl font-semibold">{formatCurrency(summaryDelta)}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{formatPercent(summaryLift)} lift vs 50+</p>
+            </div>
+            <div className="rounded-md border bg-background/80 p-3">
+              <p className="text-xs text-muted-foreground">Analyzable total {valueLabelLower}</p>
               <p className="mt-1 text-2xl font-semibold">{formatCurrency(analytics.totalValue)}</p>
               <p className="mt-1 text-xs text-muted-foreground">Avg SES {formatScore(analytics.averageScore)}</p>
             </div>
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <AnalyticsOutlierTable
         analytics={analytics}
@@ -1020,12 +1353,13 @@ function AnalyticsTab({
         expandedAppointmentId={expandedAppointmentId}
         appointmentDetailRow={appointmentDetailRow}
         toggleAppointmentDetails={toggleAppointmentDetails}
+        valueLabel={valueLabel}
       />
 
       <Card className="mt-6">
         <CardHeader>
-          <CardTitle>Segment Comparison</CardTitle>
-          <CardDescription>Segments are ranked by outlier count, then average appointment value.</CardDescription>
+          <CardTitle>Segment Breakdown</CardTitle>
+          <CardDescription>Segments are ranked by outlier count, then average {valueLabelLower}.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 xl:grid-cols-2">
@@ -1060,6 +1394,7 @@ export default function DashboardPage() {
   const [appointmentDetailCache, setAppointmentDetailCache] = useState<Record<string, PublicRow>>({});
   const [appointmentDetailErrors, setAppointmentDetailErrors] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
+  const [analyticsSettings, setAnalyticsSettings] = useState<AnalyticsSettings>(emptyAnalyticsSettings);
   const [activeDrilldownMetric, setActiveDrilldownMetric] = useState<DrilldownMetricKey>("completed");
   const [appointmentColumnFilters, setAppointmentColumnFilters] = useState<AppointmentColumnFilters>(emptyAppointmentColumnFilters);
   const drilldownRef = useRef<HTMLDivElement | null>(null);
@@ -1088,6 +1423,7 @@ export default function DashboardPage() {
         if (cached.pageSize) setPageSize(cached.pageSize);
         if (cached.currentPage) setCurrentPage(Math.max(1, cached.currentPage));
         if (cached.activeTab) setActiveTab(cached.activeTab);
+        if (cached.analyticsSettings) setAnalyticsSettings(cached.analyticsSettings);
         if (cached.activeDrilldownMetric) setActiveDrilldownMetric(cached.activeDrilldownMetric);
         if (cached.appointmentColumnFilters) setAppointmentColumnFilters(cached.appointmentColumnFilters);
       }
@@ -1110,6 +1446,7 @@ export default function DashboardPage() {
           pageSize,
           currentPage,
           activeTab,
+          analyticsSettings,
           activeDrilldownMetric,
           appointmentColumnFilters,
         }),
@@ -1127,6 +1464,7 @@ export default function DashboardPage() {
     hydratedDashboardState,
     activeReportCacheKey,
     loadedReportParams,
+    analyticsSettings,
     pageSize,
     report,
   ]);
@@ -1259,7 +1597,10 @@ export default function DashboardPage() {
   const pageStart = totalRows ? pageStartIndex + 1 : 0;
   const pageEnd = totalRows ? pageStartIndex + pagedRows.length : 0;
   const paginationPages = paginationRange(activePage, totalPages);
-  const analytics = useMemo(() => buildSesValueAnalytics(visibleReport.rows), [visibleReport.rows]);
+  const analytics = useMemo(
+    () => buildSesValueAnalytics(visibleReport.rows, analyticsSettings),
+    [analyticsSettings, visibleReport.rows],
+  );
   const firstVisitCoverage = useMemo(() => firstVisitSesScoreCoverage(visibleReport.rows), [visibleReport.rows]);
   const columnFilterCount = activeColumnFilterCount(appointmentColumnFilters);
 
@@ -2075,6 +2416,8 @@ export default function DashboardPage() {
           expandedAppointmentId={expandedAppointmentId}
           appointmentDetailRow={appointmentDetailRow}
           toggleAppointmentDetails={toggleAppointmentDetails}
+          analyticsSettings={analyticsSettings}
+          setAnalyticsSettings={setAnalyticsSettings}
         />
       )}
     </main>

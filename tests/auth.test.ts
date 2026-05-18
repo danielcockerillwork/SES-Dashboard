@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getCurrentUserId, isClerkConfigured, isLocalAuthEnabled, isVercelProtectedAuthEnabled } from "@/lib/auth";
+import { getCurrentUserId, isClerkConfigured, isDesktopAuthEnabled, isLocalAuthEnabled, isVercelProtectedAuthEnabled } from "@/lib/auth";
 
 const clerkAuthMock = vi.hoisted(() => vi.fn());
 
@@ -41,6 +41,18 @@ describe("dashboard authentication", () => {
 
     await expect(getCurrentUserId()).resolves.toBe("user_123");
     expect(clerkAuthMock).toHaveBeenCalledOnce();
+  });
+
+  it("uses the desktop user in production desktop mode without Clerk", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("AUTH_MODE", "desktop");
+    vi.stubEnv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "pk_test_123");
+    vi.stubEnv("CLERK_SECRET_KEY", "sk_test_123");
+
+    expect(isDesktopAuthEnabled()).toBe(true);
+    expect(isClerkConfigured()).toBe(false);
+    await expect(getCurrentUserId()).resolves.toBe("desktop-user");
+    expect(clerkAuthMock).not.toHaveBeenCalled();
   });
 
   it("uses the shared Vercel-protected user when deployment protection is the auth gate", async () => {

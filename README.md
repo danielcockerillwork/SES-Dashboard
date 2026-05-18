@@ -27,6 +27,24 @@ To launch the dashboard in one command:
 npm run dashboard
 ```
 
+## Desktop App
+
+For teammates who should not need Node/npm or a visible localhost server, build the macOS Electron app and publish the generated artifact from `dist/` on a GitHub Release:
+
+```bash
+npm run dist:mac
+```
+
+The first desktop version is unsigned. After downloading, macOS may require a one-time approval from **System Settings → Privacy & Security** before opening the app.
+
+The desktop app runs the packaged Next.js server privately on `127.0.0.1` and opens it in an Electron window. In desktop mode, settings and cached report data stay on the user's machine under:
+
+```text
+~/Library/Application Support/Conserva SES Score Dashboard/data
+```
+
+That folder contains local JSON files for settings, saved views, and report-run history. ServiceMinder appointment pulls are cached in `dashboard.sqlite`, with indexed tables for organizations, appointment payloads, and covered date windows. The ServiceMinder API key is encrypted with a locally generated key stored in the same app data directory. To reset a user's desktop app completely, quit the app and remove that `data` folder.
+
 ## Required Environment Variables
 
 ```bash
@@ -102,7 +120,7 @@ The dashboard focuses on:
 
 Mock fixtures are used when no ServiceMinder API key is configured so the UI and tests remain usable without live Conserva data.
 
-Completed ServiceMinder appointment payloads are cached in Postgres after a live report load. Reopening a covered date range uses the cached hydrated appointment records until `SERVICEMINDER_APPOINTMENT_CACHE_TTL_SECONDS` expires. Use the dashboard Refresh button to bypass the cache and replace the stored records for the selected range.
+Completed ServiceMinder appointment payloads are cached after a live report load. In desktop mode, the cache is local SQLite under the app data folder and is indexed by organization, appointment date, appointment id, API base URL, API key hash, and contact-hydration mode. In Postgres-backed web mode, the existing Prisma cache tables are used. Reopening a covered date range uses cached hydrated appointment records until `SERVICEMINDER_APPOINTMENT_CACHE_TTL_SECONDS` expires. Use the dashboard Refresh button to bypass the cache and replace the stored records for the selected range.
 
 ## Deployment
 

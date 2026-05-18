@@ -59,6 +59,16 @@ export type ContactAppointmentCounts = {
   upcoming: number | null;
 };
 
+export type ContactAppointmentHistoryItem = {
+  appointmentId: string | null;
+  appointmentDateTime: string | null;
+  completedDateTime: string | null;
+  serviceName: string | null;
+  status: string | null;
+  isCompleted: boolean;
+  isCurrent: boolean;
+};
+
 export type ConservaAppointmentRow = {
   id: string | null;
   appointmentUrl: string | null;
@@ -85,6 +95,7 @@ export type ConservaAppointmentRow = {
   firstAppointment: boolean | null;
   contactVisitCount: number | null;
   contactAppointmentCounts: ContactAppointmentCounts;
+  contactAppointmentHistory: ContactAppointmentHistoryItem[] | null;
   weekNumber: number | null;
   sesScore: CustomFieldValue | null;
   hasSesScore: boolean;

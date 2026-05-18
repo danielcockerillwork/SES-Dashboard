@@ -3,7 +3,7 @@ import { ClerkProvider, UserButton } from "@clerk/nextjs";
 import Image from "next/image";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { isVercelProtectedAuthEnabled } from "@/lib/auth";
+import { isDesktopAuthEnabled, isVercelProtectedAuthEnabled } from "@/lib/auth";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -16,7 +16,8 @@ export const metadata: Metadata = {
 };
 
 const vercelProtectedAuthEnabled = isVercelProtectedAuthEnabled();
-const clerkConfigured = !vercelProtectedAuthEnabled && Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+const desktopAuthEnabled = isDesktopAuthEnabled();
+const clerkConfigured = !desktopAuthEnabled && !vercelProtectedAuthEnabled && Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
 const localAuthEnabled = !clerkConfigured && process.env.NODE_ENV !== "production" && process.env.AUTH_MODE === "local";
 
 export default function RootLayout({
@@ -65,6 +66,10 @@ export default function RootLayout({
                     </Link>
                     <UserButton />
                   </div>
+                ) : desktopAuthEnabled ? (
+                  <span className="rounded-md border border-primary/15 bg-accent px-2.5 py-1.5 text-xs font-medium text-accent-foreground">
+                    Desktop mode
+                  </span>
                 ) : vercelProtectedAuthEnabled ? (
                   <span className="rounded-md border border-primary/15 bg-accent px-2.5 py-1.5 text-xs font-medium text-accent-foreground">
                     Vercel protected

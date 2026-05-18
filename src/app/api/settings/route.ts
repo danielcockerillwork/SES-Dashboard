@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getPrisma, isDatabaseConfigured } from "@/lib/db";
+import { isDatabaseConfigured } from "@/lib/db";
 import { requireCurrentUserId, unauthorizedResponse } from "@/lib/auth";
 import {
   DEFAULT_BASE_URL,
@@ -8,8 +8,10 @@ import {
   getSettings,
   parseExcludedServiceNames,
   publicSettings,
+  saveSettings,
 } from "@/lib/settings";
 import { apiKeyHint, decryptSecret, encryptSecret } from "@/lib/security";
+import { isDesktopMode } from "@/lib/runtime";
 import { ServiceMinderClient } from "@/lib/serviceminder/client";
 import { resolveCurrentServiceMinderOrganization } from "@/lib/serviceminder/identity";
 
@@ -68,7 +70,7 @@ async function resolveOrganizationForSettings(settings: Awaited<ReturnType<typeo
   try {
     const client = new ServiceMinderClient({
       baseUrl: settings.apiBaseUrl,
-      apiKey: decryptSecret(settings.encryptedApiKey),
+      apiKey: await decryptSecret(settings.encryptedApiKey),
     });
     return await resolveCurrentServiceMinderOrganization(client);
   } catch {
@@ -80,7 +82,7 @@ export async function GET() {
   const userId = await requireCurrentUserId();
   if (!userId) return unauthorizedResponse();
 
-  if (!isDatabaseConfigured()) {
+  if (!isDesktopMode() && !isDatabaseConfigured()) {
     return NextResponse.json(fallbackPublicSettings("DATABASE_URL is required to save user-level API settings."));
   }
 
@@ -93,7 +95,7 @@ export async function POST(request: Request) {
   const userId = await requireCurrentUserId();
   if (!userId) return unauthorizedResponse();
 
-  if (!isDatabaseConfigured()) {
+  if (!isDesktopMode() && !isDatabaseConfigured()) {
     return NextResponse.json(
       fallbackPublicSettings("DATABASE_URL is required before settings can be saved."),
       { status: 503 },
@@ -114,7 +116,7 @@ export async function POST(request: Request) {
       excludedServiceNames: parseExcludedServiceNames(input.excludedServiceNames),
       ...(apiKey
         ? {
-            encryptedApiKey: encryptSecret(apiKey),
+            encryptedApiKey: await encryptSecret(apiKey),
             apiKeyHint: apiKeyHint(apiKey),
             connectionStatus: "configured",
             lastError: null,
@@ -122,14 +124,7 @@ export async function POST(request: Request) {
         : {}),
     };
 
-    const settings = await getPrisma().integrationSettings.upsert({
-      where: { userId },
-      create: {
-        userId,
-        ...data,
-      },
-      update: data,
-    });
+    const settings = await saveSettings(userId, data);
 
     const organization = await resolveOrganizationForSettings(settings);
     return formRequest ? redirectToSettings(request, "saved") : NextResponse.json(publicSettings(settings, organization));

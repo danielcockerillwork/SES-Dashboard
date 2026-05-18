@@ -2,11 +2,16 @@
   "name": "conserva-appointment-field-dashboard",
   "version": "0.1.0",
   "private": true,
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "next dev",
     "dashboard": "node scripts/launch-dashboard.mjs",
+    "electron:dev": "electron .",
     "explore:appointments": "node scripts/explore-appointments.mjs",
     "build": "prisma generate && next build",
+    "build:electron-next": "AUTH_MODE=desktop ELECTRON_APP=1 npm run build",
+    "electron:build": "npm run build:electron-next && node scripts/prepare-electron-build.mjs && electron-builder --mac --publish=never",
+    "dist:mac": "npm run electron:build",
     "start": "next start",
     "lint": "eslint",
     "test": "prisma generate && vitest run",
@@ -33,6 +38,8 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "electron": "^42.1.0",
+    "electron-builder": "^26.8.1",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
     "jsdom": "^29.1.1",
@@ -40,5 +47,26 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.6"
+  },
+  "build": {
+    "appId": "com.conserva.ses-dashboard",
+    "productName": "Conserva SES Score Dashboard",
+    "asar": false,
+    "files": [
+      "electron/**/*",
+      ".next/standalone/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.business",
+      "identity": null
+    },
+    "directories": {
+      "output": "dist"
+    }
   }
 }

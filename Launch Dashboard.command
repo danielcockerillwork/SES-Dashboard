@@ -9,41 +9,30 @@ echo "Starting Conserva SES Score Dashboard"
 echo "Project: $PROJECT_DIR"
 echo
 
-if ! command -v npm >/dev/null 2>&1; then
-  echo "npm was not found in this Terminal session."
-  echo "Install Node.js/npm, then double-click this launcher again."
-  echo
-  echo "Press any key to close this window."
-  read -k 1
-  exit 1
+APP_PATH="$PROJECT_DIR/dist/mac-arm64/Conserva SES Score Dashboard.app"
+DMG_PATH="$PROJECT_DIR/dist/Conserva SES Score Dashboard-0.1.0-arm64.dmg"
+
+if [ -d "$APP_PATH" ]; then
+  echo "Opening Electron desktop app..."
+  open -n "$APP_PATH"
+  exit 0
 fi
 
-if [ ! -d "node_modules" ]; then
-  echo "Dependencies are not installed yet. Running npm install..."
-  npm install
-  install_status=$?
-
-  if [ "$install_status" -ne 0 ]; then
-    echo
-    echo "npm install failed with exit code $install_status."
-    echo "Press any key to close this window."
-    read -k 1
-    exit "$install_status"
-  fi
-
-  echo
+if [ -f "$DMG_PATH" ]; then
+  echo "The packaged app is inside the DMG."
+  echo "Opening the DMG now. Drag the app into Applications, then double-click it there."
+  open "$DMG_PATH"
+  exit 0
 fi
 
-echo "Local dashboard URL: http://localhost:${PORT:-3000}"
-echo "Leave this Terminal window open while using the dashboard."
-echo "Press Control-C here to stop the local server."
+echo "The Electron desktop app has not been built yet."
 echo
-
-npm run dashboard
-status=$?
-
+echo "Build it first with:"
+echo "  npm run dist:mac"
 echo
-echo "Dashboard server stopped with exit code $status."
+echo "Then double-click this launcher again, or open:"
+echo "  dist/mac-arm64/Conserva SES Score Dashboard.app"
+echo
 echo "Press any key to close this window."
 read -k 1
-exit "$status"
+exit 1

@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { Prisma } from "@prisma/client";
 import { getPrisma, isDatabaseConfigured } from "@/lib/db";
+import { isDesktopMode } from "@/lib/runtime";
 import { isRecord, type RawRecord } from "@/lib/serviceminder/field-access";
 
 const APPOINTMENT_CACHE_SCHEMA_VERSION = 1;
@@ -65,7 +66,11 @@ function cacheTtlMs() {
 }
 
 function cacheAvailable() {
-  return isDatabaseConfigured() && !cacheDisabled();
+  return (isDesktopMode() || isDatabaseConfigured()) && !cacheDisabled();
+}
+
+async function localSqliteStore() {
+  return import("@/lib/local-sqlite-store");
 }
 
 function parseDateKey(value: string | null | undefined) {
@@ -159,6 +164,18 @@ export async function readCachedCompletedAppointments(
   if (!fromDate || !throughDate) return null;
 
   try {
+    if (isDesktopMode()) {
+      const { readLocalSqliteAppointmentPayloads, readLocalSqliteCacheWindows } = await localSqliteStore();
+      const windows = readLocalSqliteCacheWindows(context, options.includeContact);
+      if (!cacheWindowsCoverRange(windows, fromDate, throughDate)) return null;
+      return readLocalSqliteAppointmentPayloads({
+        context,
+        includeContact: options.includeContact,
+        fromDate,
+        throughDate,
+      });
+    }
+
     const prisma = getPrisma();
     const windows = await prisma.serviceMinderAppointmentCacheWindow.findMany({
       where: {
@@ -223,6 +240,19 @@ export async function writeCachedCompletedAppointments(
   const cacheableRecords = records.filter((record) => record.reportDate && record.reportDate >= fromDate && record.reportDate <= throughDate);
 
   try {
+    if (isDesktopMode()) {
+      const { writeLocalSqliteAppointmentCache } = await localSqliteStore();
+      writeLocalSqliteAppointmentCache({
+        context,
+        includeContact: options.includeContact,
+        fromDate,
+        throughDate,
+        records: cacheableRecords,
+        warning,
+      });
+      return;
+    }
+
     const prisma = getPrisma();
     for (let index = 0; index < cacheableRecords.length; index += CACHE_UPSERT_BATCH_SIZE) {
       const chunk = cacheableRecords.slice(index, index + CACHE_UPSERT_BATCH_SIZE);

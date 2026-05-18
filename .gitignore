@@ -26,6 +26,8 @@
 redacted-appointment-*.json
 /output/
 /tmp/
+/.desktop-data/
+/dist/
 .playwright-cli/
 __pycache__/
 *.pyc

@@ -222,6 +222,41 @@ describe("Conserva reporting", () => {
     expect(row.contactLifetimeValue).toBe(4100);
   });
 
+  it("normalizes contact lifetime value from nested lifetime.value paths", () => {
+    const row = normalizeAppointment({
+      AppointmentId: 41855789,
+      ContactId: 4051869,
+      Status: 3,
+      ActualFinish: "2026-05-14T09:50:00-04:00",
+      Contact: {
+        Lifetime: {
+          Value: "$5,100.00",
+        },
+      },
+    });
+
+    expect(row.contactLifetimeValue).toBe(5100);
+  });
+
+  it("normalizes contact lifetime value from nested contact custom properties", () => {
+    const row = normalizeAppointment({
+      AppointmentId: 41855790,
+      ContactId: 4051870,
+      Status: 3,
+      ActualFinish: "2026-05-14T09:50:00-04:00",
+      Contact: {
+        CustomProperties: [
+          {
+            Name: "Lifetime Value",
+            Amount: "$6,250.00",
+          },
+        ],
+      },
+    });
+
+    expect(row.contactLifetimeValue).toBe(6250);
+  });
+
   it("hydrates organization names from the API-key organization directory", () => {
     const [hydrated] = hydrateAppointmentsWithOrganizations(
       [
@@ -466,6 +501,87 @@ describe("Conserva reporting", () => {
     const [row] = hydrated.map(normalizeAppointment);
     expect(row.contactVisitCount).toBe(3);
     expect(row.contactAppointmentCounts).toEqual({ total: 3, completed: 1, upcoming: 2 });
+  });
+
+  it("attaches chronological contact appointment history and marks the current row", async () => {
+    const hydrated = await hydrateAppointmentsWithFirstAppointmentStatus(
+      [
+        {
+          AppointmentId: 30,
+          ContactId: 701,
+          DateTime: "2026-05-10T09:00:00-04:00",
+          ActualFinish: "2026-05-10T10:00:00-04:00",
+          Status: "Complete",
+          ServiceName: "Visit",
+        },
+      ],
+      {
+        async queryAppointments() {
+          return {
+            items: [
+              {
+                AppointmentId: 31,
+                ContactId: 701,
+                DateTime: "2026-05-10T11:00:00-04:00",
+                Status: "Scheduled",
+                ServiceName: "Inspection",
+              },
+              {
+                AppointmentId: 29,
+                ContactId: 701,
+                DateTime: "2026-05-01T09:00:00-04:00",
+                ActualFinish: "2026-05-01T10:00:00-04:00",
+                Status: "Complete",
+                ServiceName: "Consultation",
+              },
+              {
+                AppointmentId: 30,
+                ContactId: 701,
+                DateTime: "2026-05-10T09:00:00-04:00",
+                ActualFinish: "2026-05-10T10:00:00-04:00",
+                Status: "Complete",
+                ServiceName: "Visit",
+              },
+            ],
+            rawResponses: [],
+            totalCount: null,
+            warning: null,
+          };
+        },
+      },
+    );
+
+    const [row] = hydrated.map(normalizeAppointment);
+    expect(row.contactAppointmentCounts).toEqual({ total: 3, completed: 2, upcoming: 1 });
+    expect(row.contactAppointmentHistory).toEqual([
+      {
+        appointmentId: "29",
+        appointmentDateTime: "2026-05-01T13:00:00.000Z",
+        completedDateTime: "2026-05-01T14:00:00.000Z",
+        serviceName: "Consultation",
+        status: "Completed",
+        isCompleted: true,
+        isCurrent: false,
+      },
+      {
+        appointmentId: "30",
+        appointmentDateTime: "2026-05-10T13:00:00.000Z",
+        completedDateTime: "2026-05-10T14:00:00.000Z",
+        serviceName: "Visit",
+        status: "Completed",
+        isCompleted: true,
+        isCurrent: true,
+      },
+      {
+        appointmentId: "31",
+        appointmentDateTime: "2026-05-10T15:00:00.000Z",
+        completedDateTime: null,
+        serviceName: "Inspection",
+        status: "Scheduled",
+        isCompleted: false,
+        isCurrent: false,
+      },
+    ]);
   });
 
   it("deduplicates contact appointment history before counting fallback-key matches", async () => {

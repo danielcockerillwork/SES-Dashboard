@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { getPrisma, isDatabaseConfigured } from "@/lib/db";
+import { isDatabaseConfigured } from "@/lib/db";
 import { requireCurrentUserId, unauthorizedResponse } from "@/lib/auth";
-import { fallbackPublicSettings, getDecryptedApiKey, getSettings, publicSettings } from "@/lib/settings";
+import { fallbackPublicSettings, getDecryptedApiKey, getSettings, publicSettings, updateSettings } from "@/lib/settings";
+import { isDesktopMode } from "@/lib/runtime";
 import { ServiceMinderApiError, ServiceMinderClient } from "@/lib/serviceminder/client";
 import { resolveCurrentServiceMinderOrganization } from "@/lib/serviceminder/identity";
 
@@ -11,7 +12,7 @@ export async function POST() {
   const userId = await requireCurrentUserId();
   if (!userId) return unauthorizedResponse();
 
-  if (!isDatabaseConfigured()) {
+  if (!isDesktopMode() && !isDatabaseConfigured()) {
     return NextResponse.json(
       fallbackPublicSettings("DATABASE_URL is required before the connection can be tested."),
       { status: 503 },
@@ -22,12 +23,9 @@ export async function POST() {
   const apiKey = await getDecryptedApiKey(userId);
 
   if (!apiKey) {
-    const updated = await getPrisma().integrationSettings.update({
-      where: { userId },
-      data: {
-        connectionStatus: "error",
-        lastError: "API key is required before testing the connection.",
-      },
+    const updated = await updateSettings(userId, {
+      connectionStatus: "error",
+      lastError: "API key is required before testing the connection.",
     });
     return NextResponse.json(publicSettings(updated), { status: 400 });
   }
@@ -39,13 +37,10 @@ export async function POST() {
     });
     await client.echo();
     const organization = await resolveCurrentServiceMinderOrganization(client);
-    const updated = await getPrisma().integrationSettings.update({
-      where: { userId },
-      data: {
-        connectionStatus: "connected",
-        lastSuccessfulSync: new Date(),
-        lastError: null,
-      },
+    const updated = await updateSettings(userId, {
+      connectionStatus: "connected",
+      lastSuccessfulSync: new Date(),
+      lastError: null,
     });
     return NextResponse.json(publicSettings(updated, organization));
   } catch (error) {
@@ -55,12 +50,9 @@ export async function POST() {
         : error instanceof Error
           ? error.message
           : "Unknown ServiceMinder error.";
-    const updated = await getPrisma().integrationSettings.update({
-      where: { userId },
-      data: {
-        connectionStatus: "error",
-        lastError: message,
-      },
+    const updated = await updateSettings(userId, {
+      connectionStatus: "error",
+      lastError: message,
     });
     return NextResponse.json(publicSettings(updated), { status: 502 });
   }

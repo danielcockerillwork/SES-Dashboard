@@ -51,7 +51,7 @@ function responseMessage(data: unknown, fallback: string) {
 function noticeFromSettingsStatus(status: string | null) {
   if (status === "saved") return "Settings saved.";
   if (status === "invalid") return "Enter a valid API base URL before saving settings.";
-  if (status === "error") return "Settings could not be saved. Check the database and encryption configuration.";
+  if (status === "error") return "Settings could not be saved. Check local storage and encryption configuration.";
   return null;
 }
 
@@ -214,7 +214,7 @@ export function SettingsClient({ initialSettings, initialNotice = null }: Settin
       <PageHeading
         title="Settings"
         eyebrow="ServiceMinder connection"
-        description="Credentials are stored per signed-in user and are never returned to the browser."
+        description="Credentials are encrypted locally for this dashboard user and are never returned to the browser."
       >
         {settings ? <StatusPill status={settings.connectionStatus} /> : null}
       </PageHeading>
@@ -375,8 +375,10 @@ export function SettingsClient({ initialSettings, initialNotice = null }: Settin
               <span className="text-sm font-medium">{formatDate(settings?.lastSuccessfulSync)}</span>
             </div>
             <div className="flex items-center justify-between gap-4">
-              <span className="text-sm text-muted-foreground">Database</span>
-              <span className="text-sm font-medium">{settings?.databaseConfigured ? "Configured" : "Missing"}</span>
+              <span className="text-sm text-muted-foreground">Storage</span>
+              <span className="text-sm font-medium">
+                {settings?.localStorage ? "Local files" : settings?.databaseConfigured ? "Database" : "Missing"}
+              </span>
             </div>
             {settings?.lastError ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-200">
